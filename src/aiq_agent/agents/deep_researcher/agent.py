@@ -30,7 +30,11 @@ from langchain_core.tools import BaseTool
 
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import load_prompt
+<<<<<<< HEAD
 from aiq_agent.common.citation_verification import EmptySourceRegistryError
+=======
+from aiq_agent.common import render_prompt_template
+>>>>>>> 40dc638 (refactor: update citation verification handling in DeepResearcherAgent)
 from aiq_agent.common.citation_verification import sanitize_report
 from aiq_agent.common.citation_verification import source_entries_from_parent_context
 from aiq_agent.common.citation_verification import verify_citations
@@ -310,11 +314,27 @@ class DeepResearcherAgent:
                     research_type="deep research",
                     enable_logging=False,
                 )
-                raise EmptySourceRegistryError(
-                    "deep research",
-                    unavailable_tools=unavailable,
-                    available_count=available_count,
-                )
+                if available_count == 0:
+                    logger.error(
+                        "Deep research produced a report but no sources were captured: "
+                        "all configured tools are unavailable (%s). "
+                        "Returning the report unverified.",
+                        unavailable,
+                    )
+                else:
+                    logger.warning(
+                        "Deep research produced a report but no sources were captured "
+                        "despite %d available tool(s). The model may have answered "
+                        "without using search results. Returning the report unverified.",
+                        available_count,
+                    )
+                if result is not None:
+                    result["citation_verification_status"] = {
+                        "status": "unverified",
+                        "reason": "empty_source_registry",
+                        "available_tool_count": available_count,
+                        "unavailable_tools": unavailable,
+                    }
 
             # Post-process: sanitize report (strip body URLs, shortened URLs, unsafe URLs)
             sanitization = sanitize_report(final_message)

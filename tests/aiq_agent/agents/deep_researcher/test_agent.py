@@ -1035,8 +1035,63 @@ class TestDeepResearcherAgent:
             assert result is not None
 
     @pytest.mark.asyncio
+<<<<<<< HEAD
     async def test_run_replaces_final_message_with_writer_markdown(self, mock_llm_provider, real_tool):
         """The final answer comes from /shared/output.md."""
+=======
+    async def test_run_empty_source_registry_returns_unverified_status(
+        self, mock_llm_provider, real_tool, mock_create_deep_agent
+    ):
+        """Empty source registry no longer raises — return the report with an unverified status flag.
+
+        Regression for issue #235: previously raised EmptySourceRegistryError and lost the report.
+        """
+        with patch("aiq_agent.agents.deep_researcher.agent.create_deep_agent", return_value=mock_create_deep_agent):
+            from aiq_agent.agents.deep_researcher.agent import DeepResearcherAgent
+
+            agent = DeepResearcherAgent(
+                llm_provider=mock_llm_provider,
+                tools=[real_tool],
+            )
+
+            state = DeepResearchAgentState(messages=[HumanMessage(content="Test query")])
+            # Intentionally do NOT populate source_registry_middleware.registry.
+
+            result = await agent.run(state)
+
+            assert result is not None
+            assert result.messages, "Report should be preserved even when sources are missing"
+            assert result.citation_verification_status is not None
+            assert result.citation_verification_status["status"] == "unverified"
+            assert result.citation_verification_status["reason"] == "empty_source_registry"
+            assert "available_tool_count" in result.citation_verification_status
+            assert "unavailable_tools" in result.citation_verification_status
+
+    @pytest.mark.asyncio
+    async def test_run_with_sources_leaves_verification_status_none(
+        self, mock_llm_provider, real_tool, mock_create_deep_agent
+    ):
+        """When sources are captured, citation_verification_status stays None (verified path)."""
+        with patch("aiq_agent.agents.deep_researcher.agent.create_deep_agent", return_value=mock_create_deep_agent):
+            from aiq_agent.agents.deep_researcher.agent import DeepResearcherAgent
+
+            agent = DeepResearcherAgent(
+                llm_provider=mock_llm_provider,
+                tools=[real_tool],
+            )
+
+            state = DeepResearchAgentState(messages=[HumanMessage(content="Test query")])
+            agent.source_registry_middleware.registry.add(SourceEntry(url="https://example.com"))
+
+            result = await agent.run(state)
+
+            assert result is not None
+            assert result.citation_verification_status is None
+
+    @pytest.mark.asyncio
+    async def test_run_preserves_valid_message_content(self, mock_llm_provider, real_tool):
+        """Test run() preserves valid message content unchanged."""
+>>>>>>> 40dc638 (refactor: update citation verification handling in DeepResearcherAgent)
         result_messages = [
             HumanMessage(content="Original query"),
             AIMessage(content="I'll help with that."),

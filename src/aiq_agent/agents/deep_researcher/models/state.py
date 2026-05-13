@@ -55,6 +55,12 @@ class DeepResearchAgentState(BaseModel):
         rubric: DeepAgents rubric used by RubricMiddleware when available.
         clarifier_result: Log from clarifier agent dialog.
         available_documents: User-uploaded documents with summaries for context.
+        citation_verification_status: Set when citation verification was skipped
+            because the source registry was empty. ``None`` means the report was
+            verified normally. When populated, contains keys: ``status``
+            (``"unverified"``), ``reason``, ``available_tool_count``,
+            ``unavailable_tools``. Downstream consumers can read this to flag
+            unverified results.
     """
 
     messages: Annotated[list[AnyMessage], add_messages]
@@ -67,3 +73,4 @@ class DeepResearchAgentState(BaseModel):
     rubric: str | None = None
     clarifier_result: str | None = None
     available_documents: list[AvailableDocument] | None = None
+    citation_verification_status: dict[str, Any] | None = None
