@@ -332,23 +332,28 @@ class ChatResearcherAgent:
             )
             try:
                 result = await self.deep_research_fn(deep_state)
-            except EmptySourceRegistryError as exc:
-                logger.warning("Deep research produced no verifiable sources")
-                if exc.unavailable_tools:
-                    from aiq_agent.common.tool_validation import format_user_facing_tool_error
-
-                    err_msg = format_user_facing_tool_error(
-                        "deep research",
-                        exc.unavailable_tools,
-                        exc.available_count,
-                    )
-                else:
-                    err_msg = (
-                        "The search tools did not return any results for this question. "
-                        "This may be due to a temporary issue or the question may need to be rephrased. "
-                        "Please try again."
-                    )
-                return {"messages": [AIMessage(content=err_msg)]}
+            # Deep researcher no longer raises EmptySourceRegistryError when the source
+            # registry is empty (issue #235): it now returns the report with
+            # `citation_verification_status` set so the report isn't lost. Block kept
+            # commented for reference until that flag is wired through to surface
+            # unverified-report UX here.
+            # except EmptySourceRegistryError as exc:
+            #     logger.warning("Deep research produced no verifiable sources")
+            #     if exc.unavailable_tools:
+            #         from aiq_agent.common.tool_validation import format_user_facing_tool_error
+            #
+            #         err_msg = format_user_facing_tool_error(
+            #             "deep research",
+            #             exc.unavailable_tools,
+            #             exc.available_count,
+            #         )
+            #     else:
+            #         err_msg = (
+            #             "The search tools did not return any results for this question. "
+            #             "This may be due to a temporary issue or the question may need to be rephrased. "
+            #             "Please try again."
+            #         )
+            #     return {"messages": [AIMessage(content=err_msg)]}
             except Exception as e:
                 if _AuthError and isinstance(e, _AuthError):
                     logger.warning("Auth error in deep research: %s", e)
