@@ -44,6 +44,7 @@ limitations under the License.
   - [Available Benchmarks](#available-benchmarks)
   - [Running Evaluations](#running-evaluations)
 - [Development](#development)
+- [OpenShift Deployment](#openshift-deployment)
 - [Roadmap](#roadmap)
 - [Security Considerations](#security-considerations)
 - [License](#license)
@@ -368,6 +369,31 @@ For development, contribution, and documentation, refer to:
 - **[Knowledge Layer Setup](sources/knowledge_layer/KNOWLEDGE-LAYER-SETUP.md)**: RAG backends and document ingestion
 - **[Docs index](docs/README.md)**: Full documentation list and component docs
 - **[Changelog](docs/source/resources/changelog.md)**: Version history and changes
+
+## OpenShift Deployment
+
+AIQ v2.0 has been validated on Red Hat OpenShift. OpenShift support is built into the Helm chart behind an `openshift.enabled` flag — no separate scripts or directories required.
+
+### Two Knowledge Modes
+
+| Mode | GPUs (AIQ) | GPUs (RAG) | Description |
+|------|------------|------------|-------------|
+| **LlamaIndex** (default) | 0 | 0 | Self-contained with local ChromaDB. All LLMs cloud-hosted. |
+| **FRAG** | 0 | 6+ | Full NVIDIA RAG Blueprint with nv-ingest document processing pipeline. |
+
+### Quick Start
+
+```bash
+helm install aiq deploy/helm/deployment-k8s \
+  -f deploy/helm/deployment-k8s/values-openshift.yaml \
+  --set aiq.openshift.ngcSecret.password="$NGC_API_KEY" \
+  --set aiq.openshift.apiKeys.nvidiaApiKey="$NVIDIA_API_KEY" \
+  --set aiq.openshift.apiKeys.tavilyApiKey="$TAVILY_API_KEY" \
+  -n <namespace> --create-namespace \
+  --wait --timeout 10m
+```
+
+For the full deployment runbook (prerequisites, FRAG mode, troubleshooting), see [`deploy/helm/openshift.md`](deploy/helm/openshift.md).
 
 ## Roadmap
 

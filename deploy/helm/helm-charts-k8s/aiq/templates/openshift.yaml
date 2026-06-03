@@ -1,0 +1,131 @@
+{{- $openshift := .Values.openshift | default dict }}
+{{- if $openshift.enabled }}
+{{- range $appName, $appConfig := .Values.apps }}
+{{- if $appConfig.enabled }}
+{{- $appRoute := $appConfig.route | default dict }}
+{{- $appIngress := $appConfig.ingress | default dict }}
+{{- /* Create a Route when route.enabled is explicitly true, or fall back to ingress.enabled (auto-convert) */ -}}
+{{- $routeEnabled := false }}
+{{- if and (hasKey $appRoute "enabled") $appRoute.enabled }}
+{{- $routeEnabled = true }}
+{{- else }}
+{{- if eq (kindOf $appIngress) "bool" }}
+{{- $routeEnabled = $appIngress }}
+{{- else if hasKey $appIngress "enabled" }}
+{{- $routeEnabled = $appIngress.enabled }}
+{{- end }}
+{{- end }}
+{{- if $routeEnabled }}
+{{- $svc := $appConfig.service | default dict }}
+{{- $tls := $appRoute.tls | default dict }}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "aiq.appFullname" (list $ $appName) }}
+  namespace: {{ include "aiq.namespace" $ }}
+  labels:
+    {{- include "aiq.appLabels" (list $ $appName $appConfig) | nindent 4 }}
+  {{- with $appRoute.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if and (hasKey $appRoute "host") $appRoute.host (ne $appRoute.host "localhost") }}
+  host: {{ $appRoute.host }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "aiq.appFullname" (list $ $appName) }}
+    weight: 100
+  port:
+    targetPort: {{ $svc.targetPort | default $svc.port | default (include "aiq.appPort" (list $appConfig)) }}
+  {{- if $tls }}
+  tls:
+    termination: {{ $tls.termination | default "edge" }}
+    {{- with $tls.insecureEdgeTerminationPolicy }}
+    insecureEdgeTerminationPolicy: {{ . }}
+    {{- end }}
+    {{- with $tls.certificate }}
+    certificate: {{ . }}
+    {{- end }}
+    {{- with $tls.key }}
+    key: {{ . }}
+    {{- end }}
+    {{- with $tls.caCertificate }}
+    caCertificate: {{ . }}
+    {{- end }}
+    {{- with $tls.destinationCACertificate }}
+    destinationCACertificate: {{ . }}
+    {{- end }}
+  {{- end }}
+  wildcardPolicy: None
+{{- end }}
+{{- end }}
+{{- end }}
+---
+# Grant the anyuid SCC to all app service accounts
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $.Values.project.name }}-anyuid-scc
+  namespace: {{ include "aiq.namespace" $ }}
+  labels:
+    {{- include "aiq.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:openshift:scc:anyuid
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: {{ include "aiq.namespace" $ }}
+{{- range $appName, $appConfig := .Values.apps }}
+{{- if $appConfig.enabled }}
+  - kind: ServiceAccount
+    name: {{ include "aiq.appFullname" (list $ $appName) }}
+    namespace: {{ include "aiq.namespace" $ }}
+{{- end }}
+{{- end }}
+
+{{/*
+  NGC image pull secret — created from values so users don't need manual oc create.
+*/}}
+{{- $ngcSecret := $openshift.ngcSecret | default dict }}
+{{- if $ngcSecret.password }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ngc-secret
+  namespace: {{ include "aiq.namespace" $ }}
+  labels:
+    {{- include "aiq.labels" $ | nindent 4 }}
+type: kubernetes.io/dockerconfigjson
+data:
+  .dockerconfigjson: {{ printf `{"auths":{"nvcr.io":{"auth":"%s"}}}` (printf "$oauthtoken:%s" $ngcSecret.password | b64enc) | b64enc }}
+{{- end }}
+
+{{/*
+  Credentials secret — the chart's deployments mount {project.name}-credentials
+  via envFrom/secretKeyRef. This creates it with API keys and DB credentials.
+*/}}
+{{- $apiKeys := $openshift.apiKeys | default dict }}
+{{- $credentialName := printf "%s-credentials" $.Values.project.name }}
+{{- if $openshift.enabled }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $credentialName }}
+  namespace: {{ include "aiq.namespace" $ }}
+  labels:
+    {{- include "aiq.labels" $ | nindent 4 }}
+type: Opaque
+stringData:
+  NVIDIA_API_KEY: {{ $apiKeys.nvidiaApiKey | default "" | quote }}
+  TAVILY_API_KEY: {{ $apiKeys.tavilyApiKey | default "" | quote }}
+  DB_USER_NAME: {{ $apiKeys.dbUserName | default "aiq" | quote }}
+  DB_USER_PASSWORD: {{ $apiKeys.dbUserPassword | default "aiq_dev" | quote }}
+{{- end }}
+{{- end }}
