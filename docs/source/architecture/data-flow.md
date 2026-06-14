@@ -139,6 +139,16 @@ Every event stored in the `EventStore` has a monotonically increasing integer
 ID. Clients track the last received event ID and reconnect using the resume
 endpoint.
 
+Only persisted DB events carry an `id:` line in the wire format. Synthetic
+control frames (`stream.mode`, `job.status`, `job.shutdown`, `job.error`)
+intentionally omit `id:` so the browser's `EventSource.lastEventId` stays
+anchored to the last persisted event. On reconnect, the cursor provided via the
+`/stream/{last_event_id}` path or the `Last-Event-ID` request header (sent
+automatically by a native `EventSource`) is therefore always a real DB `_id`,
+and the server's `WHERE id > :after_id` cursor query never skips events. A
+malformed cursor (non-integer, negative, or empty) falls back to replaying from
+the beginning rather than corrupting the query.
+
 ```mermaid
 sequenceDiagram
     participant C as Client

@@ -11,7 +11,7 @@ Release v2.1.0 (Unreleased — target 2026-05-19)
 - Cost analysis tool with pricing configs and profiling example
 - Documented MCP client patterns scoped for 2.1: `mcp_client`, `mcp_service_account`, and user-identity tools
 - Prompt restructure across all agents for KV cache prefix reuse
-- Operability: idempotent DB init, tuned Dask/Postgres defaults, request tracing into NAT spans, UI stream-failure hardening
+- Operability: idempotent DB init, tuned Dask/Postgres defaults, request tracing into NAT spans, UI stream-failure hardening, SSE reconnect cursor no longer skips events after synthetic control frames (`stream.mode`, `job.status`, `job.shutdown`, `job.error`)
 - New authentication and MCP tools guides; new skills-and-sandbox example
 - Pinned to NeMo Agent Toolkit (NAT) v1.6.0; CVE bumps for Pillow, cryptography, pygments, authlib, pyopenssl, and pytest
 

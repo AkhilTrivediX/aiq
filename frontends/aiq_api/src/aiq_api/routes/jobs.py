@@ -38,6 +38,7 @@ from typing import Annotated
 
 from fastapi import Body
 from fastapi import FastAPI
+from fastapi import Header
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -523,13 +524,22 @@ async def register_job_routes(app: FastAPI, builder: WorkflowBuilder, worker: Fa
         ),
         responses={404: {"description": "Job not found"}},
     )
-    async def stream_job_events(job_id: str) -> StreamingResponse:
-        """SSE stream for job events from beginning."""
+    async def stream_job_events(
+        job_id: str,
+        last_event_id: str | None = Header(default=None),
+    ) -> StreamingResponse:
+        """SSE stream for job events.
+
+        Starts from the beginning unless the client's browser is reconnecting,
+        in which case ``EventSource`` automatically sends the last seen event id
+        in the ``Last-Event-ID`` header and we resume from there.
+        """
         principal = require_verified_principal()
         await authorize_job_access(job_store, db_url, job_id, principal)
 
+        start = _resolve_start_event_id(None, last_event_id)
         return StreamingResponse(
-            _sse_generator(job_store, job_id, db_url, start_event_id=0),
+            _sse_generator(job_store, job_id, db_url, start_event_id=start),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -541,13 +551,20 @@ async def register_job_routes(app: FastAPI, builder: WorkflowBuilder, worker: Fa
         description="Resume an SSE stream from a specific event ID. Use for reconnection after network interruption.",
         responses={404: {"description": "Job not found"}},
     )
-    async def stream_job_events_from(job_id: str, last_event_id: int) -> StreamingResponse:
-        """SSE stream for job events from specific event ID (for reconnection)."""
+    async def stream_job_events_from(job_id: str, last_event_id: str) -> StreamingResponse:
+        """SSE stream for job events from specific event ID (for reconnection).
+
+        For clients that encode the resume cursor in the URL path rather than
+        relying on the ``Last-Event-ID`` header. ``last_event_id`` is accepted as
+        a string and parsed by ``_resolve_start_event_id`` so a malformed cursor
+        degrades to replaying from the beginning rather than returning 422.
+        """
         principal = require_verified_principal()
         await authorize_job_access(job_store, db_url, job_id, principal)
 
+        start = _resolve_start_event_id(last_event_id, None)
         return StreamingResponse(
-            _sse_generator(job_store, job_id, db_url, start_event_id=last_event_id),
+            _sse_generator(job_store, job_id, db_url, start_event_id=start),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
@@ -1130,6 +1147,51 @@ async def _get_job_artifacts(db_url: str, job_id: str) -> dict | None:
         return None
 
 
+def _format_sse(event_type: str, data: dict, event_id: int | None = None) -> str:
+    """
+    Format a Server-Sent Events frame.
+
+    The ``id:`` field is only emitted when ``event_id`` is provided (i.e. the
+    frame is backed by a real row in the job event store). Synthetic control
+    events (``stream.mode``, ``job.status``, ``job.shutdown``, ``job.error``)
+    omit the ``id:`` line so the browser's ``EventSource.lastEventId`` stays
+    anchored to the last persisted event. This keeps reconnect cursors valid:
+    on reconnect the client sends ``lastEventId`` as the ``after_id`` to the
+    ``WHERE id > :after_id`` event-store query, and a synthetic increment must
+    never overshoot a real DB ``_id`` and silently skip real events.
+    """
+    if event_id is None:
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+    return f"id: {event_id}\nevent: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+def _resolve_start_event_id(path_value: str | None, header_value: str | None) -> int:
+    """Resolve the SSE resume cursor from the route, preferring an explicit path value.
+
+    A native browser ``EventSource`` cannot put its cursor in the URL — on an
+    automatic reconnect it sends the last seen ``id:`` in the standard
+    ``Last-Event-ID`` request header. We honor that header so standard clients
+    resume correctly, while still accepting the explicit ``/stream/{id}`` path
+    value used by clients that rebuild the URL themselves.
+
+    Both inputs are raw strings parsed here (the path parameter is declared as a
+    string in the route so a malformed segment degrades gracefully instead of
+    triggering FastAPI's 422 before this fallback can run). The cursor is treated
+    as untrusted: a missing, non-integer, or negative value falls back to 0
+    (replay from the beginning) rather than corrupting the
+    ``WHERE id > :after_id`` query. Access is already authorized and job-scoped,
+    so the only effect of a bad value is where the replay starts.
+    """
+    raw = path_value if path_value is not None else header_value
+    if not raw:
+        return 0
+    try:
+        parsed = int(raw.strip())
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
+
+
 async def _sse_generator(job_store, job_id: str, db_url: str, start_event_id: int = 0):
     """
     Route to appropriate SSE generator based on database type.
@@ -1171,17 +1233,8 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
     connection_manager = get_connection_manager()
     last_status = None
     last_event_id = start_event_id
-    sequence_id = start_event_id
     terminal_statuses = {JobStatus.SUCCESS.value, JobStatus.FAILURE.value, JobStatus.INTERRUPTED.value}
     is_reconnect = start_event_id > 0
-
-    def format_sse(event_type: str, data: dict, event_id: int | None = None) -> str:
-        nonlocal sequence_id
-        if event_id is not None:
-            sequence_id = event_id
-        else:
-            sequence_id += 1
-        return f"id: {sequence_id}\nevent: {event_type}\ndata: {json.dumps(data)}\n\n"
 
     # LISTEN/NOTIFY needs a persistent session — incompatible with PgBouncer
     # transaction pooling. Use AIQ_LISTEN_DB_URL to point directly at PostgreSQL.
@@ -1211,7 +1264,7 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
             job = await job_store.get_job(job_id)
             if not job:
                 logger.warning(f"SSE pub-sub: Job {job_id} not found")
-                yield format_sse("job.error", {"error": "Job not found"})
+                yield _format_sse("job.error", {"error": "Job not found"})
                 return
 
             job_already_complete = job.status in terminal_statuses
@@ -1221,14 +1274,18 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                 f"SSE pub-sub: Fetched {len(events)} historical events for job {job_id} (after_id={last_event_id})"
             )
 
+            # ``_id`` is defensively popped: a row written without one (which
+            # shouldn't happen in production) is forwarded as a synthetic frame
+            # by ``_format_sse``, so the browser cursor stays anchored to the
+            # last known real id rather than advancing past an id we lost.
             for event in events:
                 db_event_id = event.pop("_id", None)
                 if db_event_id:
                     last_event_id = db_event_id
                 event_type = event.pop("type", "event")
-                yield format_sse(event_type, event, db_event_id)
+                yield _format_sse(event_type, event, db_event_id)
 
-            yield format_sse("stream.mode", {"mode": "pubsub", "channel": channel})
+            yield _format_sse("stream.mode", {"mode": "pubsub", "channel": channel})
 
             # Reconciliation fetch: catch events that arrived while sending the historical batch.
             # The LISTEN handler may have queued notifications for some of these, but a direct
@@ -1241,7 +1298,7 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                     if db_event_id:
                         last_event_id = db_event_id
                     event_type = event.pop("type", "event")
-                    yield format_sse(event_type, event, db_event_id)
+                    yield _format_sse(event_type, event, db_event_id)
 
             if job_already_complete:
                 last_status = job.status
@@ -1250,14 +1307,14 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                     data["error"] = job.error
                 if is_reconnect:
                     data["reconnected"] = True
-                yield format_sse("job.status", data)
+                yield _format_sse("job.status", data)
                 logger.info(f"SSE pub-sub: Job {job_id} already complete, sent {len(events)} events")
                 return
 
             while True:
                 if connection_manager.is_shutting_down:
                     logger.info("SSE pub-sub stream closing for job %s due to server shutdown", job_id)
-                    yield format_sse("job.shutdown", {"message": "Server shutting down"})
+                    yield _format_sse("job.shutdown", {"message": "Server shutting down"})
                     break
 
                 try:
@@ -1272,7 +1329,7 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                                 last_event_id = event_id
                                 db_event_id = event.pop("_id", None)
                                 event_type = event.pop("type", "event")
-                                yield format_sse(event_type, event, db_event_id)
+                                yield _format_sse(event_type, event, db_event_id)
                     except TimeoutError:
                         # Fallback poll: catch events if NOTIFY was lost
                         fallback_events = await EventStore.get_events_async(db_url, job_id, last_event_id, 100)
@@ -1281,12 +1338,12 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                             if db_event_id:
                                 last_event_id = db_event_id
                             event_type = event.pop("type", "event")
-                            yield format_sse(event_type, event, db_event_id)
+                            yield _format_sse(event_type, event, db_event_id)
 
                     job = await job_store.get_job(job_id)
                     if not job:
                         logger.warning(f"SSE pub-sub: Job {job_id} not found")
-                        yield format_sse("job.error", {"error": "Job not found"})
+                        yield _format_sse("job.error", {"error": "Job not found"})
                         break
 
                     if job.status != last_status:
@@ -1298,7 +1355,7 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                         if is_reconnect:
                             data["reconnected"] = True
                             is_reconnect = False
-                        yield format_sse("job.status", data)
+                        yield _format_sse("job.status", data)
 
                     if job.status in terminal_statuses:
                         await asyncio.sleep(0.5)
@@ -1313,7 +1370,7 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                                         last_event_id = event_id
                                         db_event_id = event.pop("_id", None)
                                         event_type = event.pop("type", "event")
-                                        yield format_sse(event_type, event, db_event_id)
+                                        yield _format_sse(event_type, event, db_event_id)
                             except asyncio.QueueEmpty:
                                 break
                         break
@@ -1323,7 +1380,7 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                     break
                 except Exception as e:
                     logger.exception("SSE pub-sub stream error for job %s: %s", job_id, e)
-                    yield format_sse("job.error", {"error": "Internal server error"})
+                    yield _format_sse("job.error", {"error": "Internal server error"})
                     break
 
     finally:
@@ -1355,38 +1412,29 @@ async def _sse_generator_polling(job_store, job_id: str, db_url: str, start_even
     connection_manager = get_connection_manager()
     last_status = None
     last_event_id = start_event_id
-    sequence_id = start_event_id
     terminal_statuses = {JobStatus.SUCCESS.value, JobStatus.FAILURE.value, JobStatus.INTERRUPTED.value}
     is_reconnect = start_event_id > 0
     in_replay_mode = True
     replay_mode_announced = False
-
-    def format_sse(event_type: str, data: dict, event_id: int | None = None) -> str:
-        nonlocal sequence_id
-        if event_id is not None:
-            sequence_id = event_id
-        else:
-            sequence_id += 1
-        return f"id: {sequence_id}\nevent: {event_type}\ndata: {json.dumps(data)}\n\n"
 
     logger.info(
         f"SSE polling stream starting for job_id={job_id}, start_event_id={start_event_id}, db_url={db_url[:50]}"
     )
 
     async with connection_manager.track_connection():
-        yield format_sse("stream.mode", {"mode": "polling", "interval_ms": 500})
+        yield _format_sse("stream.mode", {"mode": "polling", "interval_ms": 500})
 
         while True:
             if connection_manager.is_shutting_down:
                 logger.info("SSE stream closing for job %s due to server shutdown", job_id)
-                yield format_sse("job.shutdown", {"message": "Server shutting down"})
+                yield _format_sse("job.shutdown", {"message": "Server shutting down"})
                 break
 
             try:
                 job = await job_store.get_job(job_id)
                 if not job:
                     logger.warning(f"SSE: Job {job_id} not found")
-                    yield format_sse("job.error", {"error": "Job not found"})
+                    yield _format_sse("job.error", {"error": "Job not found"})
                     break
 
                 # Replay mode drains historical events quickly without wait delays.
@@ -1405,7 +1453,7 @@ async def _sse_generator_polling(job_store, job_id: str, db_url: str, start_even
                 for i, event in enumerate(events):
                     if connection_manager.is_shutting_down:
                         logger.info("SSE stream closing for job %s due to server shutdown (mid-batch)", job_id)
-                        yield format_sse("job.shutdown", {"message": "Server shutting down"})
+                        yield _format_sse("job.shutdown", {"message": "Server shutting down"})
                         return
 
                     try:
@@ -1413,7 +1461,7 @@ async def _sse_generator_polling(job_store, job_id: str, db_url: str, start_even
                         if db_event_id:
                             last_event_id = db_event_id
                         event_type = event.pop("type", "event")
-                        sse_output = format_sse(event_type, event, db_event_id)
+                        sse_output = _format_sse(event_type, event, db_event_id)
                         yield sse_output
                     except Exception as e:
                         logger.error(f"SSE: Failed to yield event {i} (id={db_event_id}): {e}", exc_info=True)
@@ -1427,7 +1475,7 @@ async def _sse_generator_polling(job_store, job_id: str, db_url: str, start_even
                     logger.info(
                         "SSE: Replay complete for job %s at event_id=%s; switching to live mode", job_id, last_event_id
                     )
-                    yield format_sse("stream.mode", {"mode": "live"})
+                    yield _format_sse("stream.mode", {"mode": "live"})
 
                 if job.status != last_status:
                     last_status = job.status
@@ -1438,7 +1486,7 @@ async def _sse_generator_polling(job_store, job_id: str, db_url: str, start_even
                     if is_reconnect:
                         data["reconnected"] = True
                         is_reconnect = False
-                    yield format_sse("job.status", data)
+                    yield _format_sse("job.status", data)
 
                 if job.status in terminal_statuses:
                     break
@@ -1451,12 +1499,12 @@ async def _sse_generator_polling(job_store, job_id: str, db_url: str, start_even
                 # (e.g., due to an exception path), emit it once before waiting.
                 if not in_replay_mode and not replay_mode_announced:
                     replay_mode_announced = True
-                    yield format_sse("stream.mode", {"mode": "live"})
+                    yield _format_sse("stream.mode", {"mode": "live"})
 
                 shutdown_signaled = await connection_manager.wait_or_shutdown(0.5)
                 if shutdown_signaled:
                     logger.info("SSE stream closing for job %s due to server shutdown (during wait)", job_id)
-                    yield format_sse("job.shutdown", {"message": "Server shutting down"})
+                    yield _format_sse("job.shutdown", {"message": "Server shutting down"})
                     break
 
             except asyncio.CancelledError:
@@ -1464,5 +1512,5 @@ async def _sse_generator_polling(job_store, job_id: str, db_url: str, start_even
                 break
             except Exception as e:
                 logger.exception("SSE stream error for job %s: %s", job_id, e)
-                yield format_sse("job.error", {"error": "Internal server error"})
+                yield _format_sse("job.error", {"error": "Internal server error"})
                 break

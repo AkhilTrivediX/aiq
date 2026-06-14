@@ -124,16 +124,33 @@ Stream real-time events from a running or completed job using Server-Sent Events
 # Stream from beginning
 curl -N http://localhost:8000/v1/jobs/async/job/{job_id}/stream
 
-# Reconnect from a specific event ID
+# Reconnect from a specific event ID (cursor in the URL path)
 curl -N http://localhost:8000/v1/jobs/async/job/{job_id}/stream/{last_event_id}
+
+# Reconnect via the standard Last-Event-ID header (what a browser EventSource
+# sends automatically on auto-reconnect)
+curl -N -H "Last-Event-ID: 42" http://localhost:8000/v1/jobs/async/job/{job_id}/stream
 ```
 
-Each SSE message has the format:
+The base `/stream` endpoint resumes from the `Last-Event-ID` request header when
+present (native `EventSource` cannot encode the cursor in the URL, so it sends
+this header on reconnect). The `/stream/{last_event_id}` path form is for
+clients that rebuild the URL themselves. The cursor is validated server-side:
+non-integer or negative values fall back to replaying from the beginning.
 
-```
+Each persisted-event SSE message has the format:
+
+```text
 id: 42
 event: llm.chunk
 data: {"content": "The latest advances..."}
+```
+
+Synthetic control events (`stream.mode`, `job.status`, `job.shutdown`, `job.error`) intentionally omit the `id:` line so the browser's `EventSource.lastEventId` stays anchored to the last persisted DB event. This keeps the reconnect cursor (`/stream/{last_event_id}`) valid: it never advances past a real `_id` and never silently skips events.
+
+```text
+event: stream.mode
+data: {"mode": "pubsub", "channel": "job_events_abc"}
 ```
 
 #### Replay and Live Handoff
