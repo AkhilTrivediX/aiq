@@ -1,17 +1,12 @@
 ---
 name: data-table-analysis
 description: >
-  Use this skill for converting researched facts or user-provided data into structured tables by writing code, then running Python/pandas calculations in the job-scoped sandbox. This skill is for numeric normalization, tabular analysis, rankings, growth rates, summary statistics, CSV/JSON generation, and markdown tables.
-  Triggers: "compute table", "calculate growth", "normalize values", "extract figures",
-  "rank companies", "QoQ", "YoY", "CAGR", "summary statistics", "CSV", "JSON",
-  "markdown table", "standardize quarters", "standardize currencies", "compare over time"
-  Outputs: Markdown tables, CSV text, JSON records, summary statistics, rankings, and data-quality notes.
+  Use this skill for converting researched facts or user-provided data into structured tables by writing code, then running Python/pandas calculations in the job-scoped sandbox. This skill is for numeric normalization, tabular analysis, rankings, growth rates, summary statistics, CSV/JSON generation, and markdown tables. Triggers: "compute table", "calculate growth", "normalize values", "extract figures", "rank companies", "QoQ", "YoY", "CAGR", "summary statistics", "CSV", "JSON", "markdown table", "standardize quarters", "standardize currencies", "compare over time". Outputs: Markdown tables, CSV text, JSON records, summary statistics, rankings, and data-quality notes.
 ---
 
 # Data Table Analysis Skill
 
-Generate accurate, source-grounded tables and computed quantitative summaries using Python/pandas.
-This skill produces text artifacts that can be read and included in the final report.
+Generate accurate, source-grounded tables and computed quantitative summaries using Python/pandas. This skill produces text artifacts that can be read and included in the final report.
 
 ## Required Execution Standard
 
@@ -20,7 +15,7 @@ To ensure the calculation is reproducible and useful, you MUST:
 2. **Preserve Provenance:** Keep source URLs, filing names, or note references in the input table when available.
 3. **Normalize Units:** Convert currencies, magnitudes, periods, and date labels into consistent fields before comparing values.
 4. **Compute Deterministically:** Call the `execute` tool to run Python/pandas for arithmetic, rankings, growth rates, aggregates, and formatting. Do not hand-compute these values in prose.
-5. **Write Text Outputs:** Save markdown, CSV, or JSON outputs to `/shared/...` with descriptive filenames using `write_file`.
+5. **Return Text Outputs:** Include the markdown, CSV, or JSON output in your returned `ResearchNotes` (e.g. a `ResearchFinding`'s `evidence` and/or `narrative_notes`). Do not call `write_file`; `run_research_batch` persists your returned notes.
 6. **Report Caveats:** Include assumptions, missing values, restatements, estimated figures, or non-comparable metrics in the output notes.
 
 ## Execution Flow
@@ -41,10 +36,7 @@ To ensure the calculation is reproducible and useful, you MUST:
 
 4. Inspect the `execute` output. If the code fails, fix the code and call `execute` again. Do not continue with hand-computed fallback tables unless the sandbox or pandas is unavailable.
 
-5. Write final text artifacts from the successful `execute` output to `/shared/...` using `write_file`, for example:
-   - `/shared/capex_growth_table.md`
-   - `/shared/capex_normalized.csv`
-   - `/shared/capex_analysis.json`
+5. Return the final outputs from the successful `execute` run in your `ResearchNotes` — put the markdown table, CSV, or JSON into a `ResearchFinding`'s `evidence` and/or `narrative_notes`. Do not call `write_file`/`edit_file`; `run_research_batch` persists your returned notes under `/shared/` automatically.
 
 6. In the response or report, cite the original sources for the input figures. Computed columns should be clearly labeled as calculations.
 
@@ -77,12 +69,12 @@ To ensure the calculation is reproducible and useful, you MUST:
 
 ## Output Formats
 
-The sandbox supports text outputs that should be saved through `/shared/`:
-- `.md` - Markdown tables and explanatory notes for report inclusion.
-- `.csv` - Normalized tabular data for reuse.
-- `.json` - Structured records, assumptions, and summary metrics.
+Return text outputs in your `ResearchNotes` for synthesis:
+- a Markdown table - tables and explanatory notes for report inclusion.
+- CSV text - normalized tabular data for reuse.
+- a JSON block - structured records, assumptions, and summary metrics.
 
-**Storage Note:** Always use descriptive filenames (e.g., ai_capex_8q_growth.md) rather than generic names like output.md.
+**Note:** Label each output clearly (e.g. an "AI capex 8Q growth" table) so the writer can use it.
 
 ---
 
