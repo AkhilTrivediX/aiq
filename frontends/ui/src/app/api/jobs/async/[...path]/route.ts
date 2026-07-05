@@ -125,11 +125,17 @@ export async function GET(
       : isArtifactContent
         ? '*/*'
         : 'application/json'
+    // On automatic reconnect, EventSource sends the resume cursor in the
+    // Last-Event-ID header. Forward it so the backend resumes from the last
+    // received event instead of replaying from zero (which duplicates
+    // UUID-backed progress entries in the UI).
+    const lastEventId = isStreamRequest ? req.headers.get('Last-Event-ID') : null
     const response = await fetch(backendUrl, {
       method: 'GET',
       headers: {
         ...authHeaders,
         Accept: acceptHeader,
+        ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}),
       },
       ...(isStreamRequest ? { signal: req.signal } : {}),
     })
