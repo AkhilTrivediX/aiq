@@ -144,6 +144,33 @@ async def test_submit_job_forwards_selected_data_sources(submit_app):
 
 
 @pytest.mark.asyncio
+async def test_submit_job_rejects_internal_agent(submit_app, monkeypatch):
+    app, submitted_job, _builder = submit_app
+    import aiq_api.routes.jobs as jobs_routes
+
+    monkeypatch.setattr(
+        jobs_routes,
+        "get_agent_config",
+        lambda _agent_type: AgentConfig(
+            class_path="aiq_agent.agents.report_rewriter.agent.ReportRewriterAgent",
+            config_name="report_rewriter_agent",
+            description="Internal report rewriter",
+            public=False,
+        ),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/jobs/async/submit",
+            json={"agent_type": "report_rewriter", "input": "revise"},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Agent type is internal-only and cannot be submitted directly: report_rewriter"
+    submitted_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_submit_job_omitted_data_sources_keeps_all_sources(submit_app):
     app, submitted_job, builder = submit_app
 
@@ -616,3 +643,25 @@ async def test_validation_does_not_call_get_all_tool_refs_when_fn_config_tools_i
     _, kwargs = builder.get_tools.await_args
     assert kwargs["tool_names"] == ["knowledge_search_tool"]
     submitted_job.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_list_data_sources_exposes_default_enabled(submit_app):
+    """GET /v1/data_sources must surface the registry's default_enabled (not hardcode True)."""
+    app, _submitted_job, _builder = submit_app
+    # Re-populate at request time: list_data_sources() reads the registry per request.
+    reset_registry()
+    populate_from_config(
+        [
+            {"id": "web_search", "name": "Web Search", "description": "x"},  # default_enabled -> True
+            {"id": "off_by_default", "name": "Off", "description": "y", "default_enabled": False},
+        ]
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/v1/data_sources")
+
+    assert response.status_code == 200
+    by_id = {s["id"]: s for s in response.json()}
+    assert by_id["web_search"]["default_enabled"] is True
+    assert by_id["off_by_default"]["default_enabled"] is False
