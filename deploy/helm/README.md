@@ -131,6 +131,45 @@ To see what values the chart supports before installing:
 helm show values aiq2-web-2.0.0.tgz
 ```
 
+### Amazon OpenSearch Serverless
+
+The backend image can be overridden through values without forking the chart:
+
+```yaml
+aiq:
+  apps:
+    backend:
+      image:
+        repository: <registry>/<aiq-agent-image>
+        tag: <tag>
+```
+
+For Amazon OpenSearch Serverless, set the backend workflow config to `configs/config_web_opensearch.yml` and configure
+SigV4 through environment values:
+
+```yaml
+aiq:
+  apps:
+    backend:
+      env:
+        CONFIG_FILE: configs/config_web_opensearch.yml
+        OPENSEARCH_URL: https://abc123.us-west-2.aoss.amazonaws.com
+        OPENSEARCH_AUTH_TYPE: sigv4
+        OPENSEARCH_AWS_SERVICE: aoss
+        OPENSEARCH_INDEX_PREFIX: aiq
+        AWS_REGION: us-west-2
+        OPENSEARCH_INGESTION_MODE: auto
+        OPENSEARCH_DASK_FILE_TRANSFER: bytes
+```
+
+A complete example is available at
+[`deploy/helm/examples/aws-opensearch-serverless-values.yaml`](examples/aws-opensearch-serverless-values.yaml).
+
+For EKS Pod Identity, associate the IAM role with the backend service account for this release. With the default chart
+names, the namespace is `ns-aiq` and the backend service account is `aiq-backend`. EKS Pod Identity associations are
+created through EKS, not by annotating the service account. The role also needs OpenSearch Serverless IAM access and a
+data access policy for the target collection/index pattern.
+
 ### Verify
 
 ```bash
@@ -150,8 +189,13 @@ aiq-postgres-xxx                1/1     Running   0          30s
 
 ```bash
 kubectl port-forward -n ns-aiq svc/aiq-backend 8000:8000 &
+curl http://localhost:8000/live
 curl http://localhost:8000/health
 ```
+
+The backend liveness probe uses `/live`, which checks only that the API process
+responds. The readiness probe uses `/health`, which checks required dependencies
+and can return HTTP 503 without causing Kubernetes to restart the process.
 
 The backend API docs are available at `http://localhost:8000/docs` while the port-forward is active.
 

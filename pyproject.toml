@@ -54,6 +54,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+s3 = [
+    "boto3>=1.35.0,<2",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
@@ -99,6 +102,11 @@ testpaths = ["tests", "sources/**/tests"]
 addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
+markers = [
+    "aws: tests that require AWS resources",
+    "integration: tests that require external services",
+    "opensearch_serverless: tests that require Amazon OpenSearch Serverless",
+]
 
 
 [tool.ruff]
