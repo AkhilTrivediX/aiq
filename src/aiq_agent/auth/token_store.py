@@ -96,6 +96,7 @@ class SqlTokenStore(TokenStore):
         self._db_url = db_url
         self._cipher = cipher or TokenCipher()
         self._engine = None
+        self._metadata, self._table = self._build_schema()
         self._ensure_table()
 
     # -- engine / schema -------------------------------------------------
@@ -108,19 +109,19 @@ class SqlTokenStore(TokenStore):
             self._engine = create_engine(self._db_url, connect_args=connect_args, pool_pre_ping=True)
         return self._engine
 
-    def _ensure_table(self) -> None:
+    @staticmethod
+    def _build_schema():
+        """Define the token table once; reused by every op (no per-call reflection)."""
         from sqlalchemy import Column
         from sqlalchemy import DateTime
         from sqlalchemy import MetaData
         from sqlalchemy import String
         from sqlalchemy import Table
         from sqlalchemy import Text
-        from sqlalchemy import inspect
         from sqlalchemy.sql import func
 
-        engine = self._get_engine()
         metadata = MetaData()
-        Table(
+        table = Table(
             _TABLE_NAME,
             metadata,
             Column("session_id", String(128), primary_key=True),
@@ -130,19 +131,22 @@ class SqlTokenStore(TokenStore):
             Column("refresh_token_expires_at", DateTime(timezone=True), nullable=True),
             Column("updated_at", DateTime(timezone=True), server_default=func.now()),
         )
+        return metadata, table
+
+    def _ensure_table(self) -> None:
+        from sqlalchemy import inspect
+
+        engine = self._get_engine()
         if not inspect(engine).has_table(_TABLE_NAME):
-            metadata.create_all(engine)
+            self._metadata.create_all(engine)
             logger.info("Created %s table", _TABLE_NAME)
 
     # -- sync DB ops (run in executor by the async methods) --------------
 
     def _put_sync(self, token: StoredToken) -> None:
-        from sqlalchemy import MetaData
-        from sqlalchemy import Table
-
         encrypted = self._cipher.encrypt(token.refresh_token, aad=token.session_id)
         engine = self._get_engine()
-        table = Table(_TABLE_NAME, MetaData(), autoload_with=engine)
+        table = self._table
         row = {
             "session_id": token.session_id,
             "user_sub": token.user_sub,
@@ -170,12 +174,10 @@ class SqlTokenStore(TokenStore):
             conn.execute(stmt)
 
     def _get_sync(self, session_id: str) -> StoredToken | None:
-        from sqlalchemy import MetaData
-        from sqlalchemy import Table
         from sqlalchemy import select
 
         engine = self._get_engine()
-        table = Table(_TABLE_NAME, MetaData(), autoload_with=engine)
+        table = self._table
         with engine.connect() as conn:
             result = conn.execute(select(table).where(table.c.session_id == session_id)).mappings().first()
         if result is None:
@@ -191,12 +193,10 @@ class SqlTokenStore(TokenStore):
         )
 
     def _delete_sync(self, session_id: str) -> None:
-        from sqlalchemy import MetaData
-        from sqlalchemy import Table
         from sqlalchemy import delete
 
         engine = self._get_engine()
-        table = Table(_TABLE_NAME, MetaData(), autoload_with=engine)
+        table = self._table
         with engine.begin() as conn:
             conn.execute(delete(table).where(table.c.session_id == session_id))
 
