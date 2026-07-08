@@ -18,11 +18,13 @@
 from __future__ import annotations
 
 import base64
+import itertools
 import os
 import tempfile
 from datetime import UTC
 from datetime import datetime
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine
@@ -32,12 +34,30 @@ from aiq_agent.auth.token_cipher import TokenCipher
 from aiq_agent.auth.token_store import SqlTokenStore
 from aiq_agent.auth.token_store import StoredToken
 from aiq_agent.auth.token_store import get_token_store
+from aiq_agent.auth.token_store import reset_token_store_cache_for_tests
 
 _KEY_B64 = base64.b64encode(os.urandom(32)).decode()
 
+# mkdtemp creates a 0700 directory atomically (unlike the TOCTOU-prone mktemp);
+# unique filenames keep each store's DB isolated.
+_TMPDIR = tempfile.mkdtemp(prefix="aiq_token_store_test_")
+_counter = itertools.count()
+
+
+def _new_db_url() -> str:
+    return f"sqlite:///{Path(_TMPDIR) / f'tokens_{next(_counter)}.db'}"
+
+
+@pytest.fixture(autouse=True)
+def _clear_store_cache():
+    """Reset the module-level store cache/flags around every test."""
+    reset_token_store_cache_for_tests()
+    yield
+    reset_token_store_cache_for_tests()
+
 
 def _store() -> tuple[SqlTokenStore, str]:
-    db_url = f"sqlite:///{tempfile.mktemp(suffix='.db')}"
+    db_url = _new_db_url()
     cipher = TokenCipher(key=base64.b64decode(_KEY_B64))
     return SqlTokenStore(db_url, cipher=cipher), db_url
 
@@ -156,6 +176,23 @@ def test_factory_disabled_without_key(monkeypatch):
 def test_factory_enabled_with_key(monkeypatch):
     """A configured key yields a usable SqlTokenStore."""
     monkeypatch.setenv("AIQ_TOKEN_ENCRYPTION_KEY", _KEY_B64)
-    db_url = f"sqlite:///{tempfile.mktemp(suffix='.db')}"
-    store = get_token_store(db_url)
+    store = get_token_store(_new_db_url())
     assert isinstance(store, SqlTokenStore)
+
+
+def test_factory_fails_loudly_on_invalid_key(monkeypatch):
+    """A key that is set but malformed must raise, not silently disable."""
+    from aiq_agent.auth.token_cipher import TokenEncryptionConfigError
+
+    monkeypatch.setenv("AIQ_TOKEN_ENCRYPTION_KEY", "not-valid-base64!!!")
+    with pytest.raises(TokenEncryptionConfigError):
+        get_token_store(_new_db_url())
+
+
+def test_factory_caches_store_per_db_url(monkeypatch):
+    """Repeat calls for the same db_url return the same cached store/engine."""
+    monkeypatch.setenv("AIQ_TOKEN_ENCRYPTION_KEY", _KEY_B64)
+    url = _new_db_url()
+    first = get_token_store(url)
+    second = get_token_store(url)
+    assert first is second

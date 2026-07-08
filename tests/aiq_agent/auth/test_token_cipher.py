@@ -78,6 +78,38 @@ def test_malformed_envelope_is_rejected():
         c.decrypt('{"v":999,"nonce":"x","ct":"y"}', aad="s")
 
 
+def test_tampered_alg_on_valid_ciphertext_is_rejected():
+    """A genuine ciphertext whose alg label is swapped must be refused.
+
+    This isolates the algorithm guard: the ciphertext is otherwise valid, so
+    without the alg check it would decrypt successfully (a downgrade).
+    """
+    import json
+
+    c = _cipher()
+    envelope = json.loads(c.encrypt("secret", aad="s"))
+    envelope["alg"] = "AES-128-GCM"
+    with pytest.raises(TokenEncryptionInvalidData):
+        c.decrypt(json.dumps(envelope), aad="s")
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        '{"v":1,"nonce":"AAAAAAAAAAAAAAAA","ct":"AAAA"}',  # missing alg
+        '{"v":1,"alg":"AES-256-GCM","nonce":123,"ct":"AAAA"}',  # non-string nonce (would TypeError)
+        '{"v":1,"alg":"AES-256-GCM","nonce":"AAAAAAAAAAAAAAAA","ct":456}',  # non-string ct (would TypeError)
+        '{"v":1,"alg":"AES-256-GCM","nonce":"AAAAAAAAAAAAAAAA"}',  # missing ct
+        '{"v":1,"alg":"AES-256-GCM","nonce":"AA","ct":"AAAA"}',  # wrong nonce length
+    ],
+)
+def test_envelope_metadata_is_validated(envelope):
+    """Missing/non-string/wrong-length fields are rejected cleanly, not as TypeError."""
+    c = _cipher()
+    with pytest.raises(TokenEncryptionInvalidData):
+        c.decrypt(envelope, aad="s")
+
+
 def test_load_key_validates_length():
     """A key that does not decode to 32 bytes is rejected."""
     with pytest.raises(TokenEncryptionConfigError):

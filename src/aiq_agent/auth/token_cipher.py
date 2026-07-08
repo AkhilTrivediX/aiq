@@ -128,8 +128,19 @@ class TokenCipher:
             raise TokenEncryptionInvalidData("stored token is not a valid envelope") from exc
         if not isinstance(envelope, dict) or envelope.get("v") != _ENVELOPE_VERSION:
             raise TokenEncryptionInvalidData("unsupported token envelope version")
-        nonce = _b64url_decode(envelope.get("nonce", ""))
-        sealed = _b64url_decode(envelope.get("ct", ""))
+        # Validate metadata before touching the ciphertext: reject a tampered
+        # algorithm label, non-string fields, or a wrong-length nonce, so bad
+        # input fails as TokenEncryptionInvalidData rather than a raw TypeError.
+        if envelope.get("alg") != _ALGORITHM:
+            raise TokenEncryptionInvalidData("unsupported token envelope algorithm")
+        nonce_field = envelope.get("nonce")
+        ct_field = envelope.get("ct")
+        if not isinstance(nonce_field, str) or not isinstance(ct_field, str):
+            raise TokenEncryptionInvalidData("token envelope fields must be strings")
+        nonce = _b64url_decode(nonce_field)
+        sealed = _b64url_decode(ct_field)
+        if len(nonce) != _NONCE_BYTES:
+            raise TokenEncryptionInvalidData("token envelope nonce has the wrong length")
         try:
             plaintext = AESGCM(self._key).decrypt(nonce, sealed, aad.encode("utf-8"))
         except InvalidTag as exc:

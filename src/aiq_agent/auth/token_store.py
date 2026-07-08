@@ -39,14 +39,16 @@ from dataclasses import dataclass
 from datetime import UTC
 from datetime import datetime
 
+from .token_cipher import _ENV_KEY
 from .token_cipher import TokenCipher
-from .token_cipher import token_encryption_configured
+from .token_cipher import load_token_encryption_key
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB_URL = "sqlite:///./data/jobs.db"
 _TABLE_NAME = "auth_token_store"
 _disabled_warned = False
+_store_cache: dict[str, SqlTokenStore] = {}
 
 
 @dataclass(frozen=True)
@@ -137,26 +139,35 @@ class SqlTokenStore(TokenStore):
     def _put_sync(self, token: StoredToken) -> None:
         from sqlalchemy import MetaData
         from sqlalchemy import Table
-        from sqlalchemy import delete
-        from sqlalchemy import insert
 
         encrypted = self._cipher.encrypt(token.refresh_token, aad=token.session_id)
         engine = self._get_engine()
         table = Table(_TABLE_NAME, MetaData(), autoload_with=engine)
-        now = datetime.now(UTC)
         row = {
             "session_id": token.session_id,
             "user_sub": token.user_sub,
             "refresh_token_encrypted": encrypted,
             "id_token_expires_at": token.id_token_expires_at,
             "refresh_token_expires_at": token.refresh_token_expires_at,
-            "updated_at": token.updated_at or now,
+            "updated_at": token.updated_at or datetime.now(UTC),
         }
-        # Portable upsert: delete-then-insert inside one transaction. The row is
-        # keyed by session_id, so this is an idempotent replace.
+        # Atomic upsert keyed by session_id: a single INSERT ... ON CONFLICT DO
+        # UPDATE, so concurrent writers for the same session can't race a
+        # delete-then-insert gap. Both SQLite and Postgres support it.
+        if engine.dialect.name == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as _pg_insert
+
+            stmt = _pg_insert(table).values(**row)
+            update_cols = {c: stmt.excluded[c] for c in row if c != "session_id"}
+            stmt = stmt.on_conflict_do_update(index_elements=[table.c.session_id], set_=update_cols)
+        else:
+            from sqlalchemy.dialects.sqlite import insert as _sqlite_insert
+
+            stmt = _sqlite_insert(table).values(**row)
+            update_cols = {c: stmt.excluded[c] for c in row if c != "session_id"}
+            stmt = stmt.on_conflict_do_update(index_elements=[table.c.session_id], set_=update_cols)
         with engine.begin() as conn:
-            conn.execute(delete(table).where(table.c.session_id == token.session_id))
-            conn.execute(insert(table).values(**row))
+            conn.execute(stmt)
 
     def _get_sync(self, session_id: str) -> StoredToken | None:
         from sqlalchemy import MetaData
@@ -208,18 +219,43 @@ def get_token_store(db_url: str | None = None) -> TokenStore | None:
     """Return the default TokenStore, or None when the feature is not configured.
 
     Server-side token storage requires ``AIQ_TOKEN_ENCRYPTION_KEY`` so refresh
-    tokens are never written in plaintext. When the key is absent the store is
-    disabled (returns None) and callers fall back to the existing
-    freeze-at-submission behavior — a graceful skip, not a crash or a leak.
+    tokens are never written in plaintext.
+
+    - Key **unset**: the store is disabled (returns None) and callers fall back
+      to the existing freeze-at-submission behavior — a graceful skip.
+    - Key **set but invalid**: raises ``TokenEncryptionConfigError`` so a
+      misconfigured deployment fails loudly instead of silently degrading to
+      no-op storage.
+
+    The resulting store is cached per resolved database URL so repeat calls
+    reuse one engine.
     """
     global _disabled_warned
-    if not token_encryption_configured():
+    if not os.environ.get(_ENV_KEY):
         if not _disabled_warned:
             logger.info(
-                "Server-side token store disabled: AIQ_TOKEN_ENCRYPTION_KEY is not set. "
-                "Long-running jobs will continue to use the token captured at submission."
+                "Server-side token store disabled: %s is not set. "
+                "Long-running jobs will continue to use the token captured at submission.",
+                _ENV_KEY,
             )
             _disabled_warned = True
         return None
+    # Key is present: validate it now so a bad value fails loudly here rather
+    # than at first use (raises TokenEncryptionConfigError).
+    load_token_encryption_key()
     resolved = db_url or os.environ.get("NAT_JOB_STORE_DB_URL", _DEFAULT_DB_URL)
-    return SqlTokenStore(resolved)
+    cached = _store_cache.get(resolved)
+    if cached is None:
+        cached = SqlTokenStore(resolved)
+        _store_cache[resolved] = cached
+    return cached
+
+
+def reset_token_store_cache_for_tests() -> None:
+    """Dispose cached stores and clear the cache (test helper)."""
+    global _disabled_warned
+    for store in _store_cache.values():
+        if store._engine is not None:
+            store._engine.dispose()
+    _store_cache.clear()
+    _disabled_warned = False
