@@ -1940,7 +1940,7 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                         job_id,
                         e.__class__.__name__,
                     )
-                    yield format_sse("job.error", {"error": "Content encryption is unavailable"})
+                    yield _format_sse("job.error", {"error": "Content encryption is unavailable"})
                     break
                 except ContentEncryptionInvalidData as e:
                     logger.warning(
@@ -1948,7 +1948,7 @@ async def _sse_generator_postgres(job_store, job_id: str, db_url: str, start_eve
                         job_id,
                         e.__class__.__name__,
                     )
-                    yield format_sse("job.error", {"error": "Job event data is invalid"})
+                    yield _format_sse("job.error", {"error": "Job event data is invalid"})
                     break
                 except Exception as e:
                     logger.exception("SSE pub-sub stream error for job %s: %s", job_id, e)
@@ -2099,11 +2099,11 @@ async def _sse_generator_polling(job_store, job_id: str, db_url: str, start_even
                 break
             except ContentEncryptionUnavailable as e:
                 logger.warning("SSE encrypted event decrypt unavailable for job %s: %s", job_id, e.__class__.__name__)
-                yield format_sse("job.error", {"error": "Content encryption is unavailable"})
+                yield _format_sse("job.error", {"error": "Content encryption is unavailable"})
                 break
             except ContentEncryptionInvalidData as e:
                 logger.warning("SSE encrypted event data invalid for job %s: %s", job_id, e.__class__.__name__)
-                yield format_sse("job.error", {"error": "Job event data is invalid"})
+                yield _format_sse("job.error", {"error": "Job event data is invalid"})
                 break
             except Exception as e:
                 logger.exception("SSE stream error for job %s: %s", job_id, e)
