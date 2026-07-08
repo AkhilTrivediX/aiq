@@ -116,6 +116,47 @@ class EmptyContentFixMiddleware(AgentMiddleware):
         return await handler(request.override(messages=fixed_messages))
 
 
+class ExecuteTimeoutClampMiddleware(AgentMiddleware):
+    """Clamp the sandbox ``execute`` tool's per-call timeout to a configured ceiling.
+
+    The deepagents ``execute`` tool forwards a model-supplied ``timeout`` straight to the
+    sandbox backend, and providers cap it (OpenShell rejects an ``exec`` timeout above the
+    gateway maximum). LLMs routinely pass an oversized value -- e.g. milliseconds, where the
+    backend expects seconds, or an arbitrarily large round number -- so an unclamped timeout
+    makes every ``execute`` fail with a "timeout exceeds maximum" error and no sandbox code
+    ever runs. Bound the argument to the configured sandbox lifetime (seconds).
+
+    This guards a different boundary than ``SandboxProvider._clamp_timeout`` in
+    ``sandbox/base.py``: that clamp covers AI-Q's own provider-mediated calls (e.g. workspace
+    prep), whereas the deepagents ``execute`` tool reaches the backend without passing through
+    it, so the untrusted agent argument must be sanitized here at the tool-call boundary.
+    """
+
+    def __init__(self, *, max_timeout_seconds: int) -> None:
+        """Store the ceiling (in seconds) that a single ``execute`` call may request."""
+        self.max_timeout_seconds = max(1, int(max_timeout_seconds))
+
+    async def awrap_tool_call(self, request, handler):
+        """Clamp an oversized ``timeout`` argument on ``execute`` tool calls."""
+        tool_call = request.tool_call
+        if tool_call.get("name") != "execute":
+            return await handler(request)
+        args = tool_call.get("args")
+        if not isinstance(args, dict) or not isinstance(args.get("timeout"), (int, float)):
+            return await handler(request)
+        requested = int(args["timeout"])
+        # A non-positive value means "no timeout" to the backend; leave it alone.
+        if requested <= 0 or requested <= self.max_timeout_seconds:
+            return await handler(request)
+        logger.warning(
+            "Clamping execute timeout %ss -> %ss (agent-supplied value exceeds the sandbox ceiling)",
+            requested,
+            self.max_timeout_seconds,
+        )
+        modified = {**tool_call, "args": {**args, "timeout": self.max_timeout_seconds}}
+        return await handler(request.override(tool_call=modified))
+
+
 # Common hallucinated tool name mappings
 _TOOL_NAME_ALIASES: dict[str, str] = {
     "open_file": "read_file",
@@ -504,6 +545,28 @@ class SourceRegistryMiddleware(AgentMiddleware):
         returns the complete registry.
         """
         return self._render_source_list_text(self.get_source_entries(mode=mode))
+
+
+class ArtifactHarvestMiddleware(AgentMiddleware):
+    """Checkpoint durable artifacts after successful sandbox execute calls."""
+
+    def __init__(self, artifact_manager: object) -> None:
+        """Store the artifact manager used for best-effort checkpoints."""
+        self.artifact_manager = artifact_manager
+
+    async def awrap_tool_call(self, request, handler):
+        """Run the tool, then checkpoint manifest-declared artifacts after execute."""
+        result = await handler(request)
+        tool_name = ""
+        if hasattr(request, "tool_call") and isinstance(request.tool_call, dict):
+            tool_name = request.tool_call.get("name", "")
+        result_status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
+        if tool_name == "execute" and result_status != "error":
+            try:
+                await asyncio.to_thread(self.artifact_manager.harvest_after_execute)
+            except Exception as exc:  # noqa: BLE001 - artifact capture must not fail the agent
+                logger.warning("Artifact checkpoint harvest failed (%s)", type(exc).__name__)
+        return result
 
 
 class PlanPersistenceMiddleware(AgentMiddleware):
