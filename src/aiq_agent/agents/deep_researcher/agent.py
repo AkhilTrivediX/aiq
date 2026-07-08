@@ -30,11 +30,6 @@ from langchain_core.tools import BaseTool
 
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import load_prompt
-<<<<<<< HEAD
-from aiq_agent.common.citation_verification import EmptySourceRegistryError
-=======
-from aiq_agent.common import render_prompt_template
->>>>>>> 40dc638 (refactor: update citation verification handling in DeepResearcherAgent)
 from aiq_agent.common.citation_verification import sanitize_report
 from aiq_agent.common.citation_verification import source_entries_from_parent_context
 from aiq_agent.common.citation_verification import verify_citations

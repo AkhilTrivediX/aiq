@@ -1035,10 +1035,6 @@ class TestDeepResearcherAgent:
             assert result is not None
 
     @pytest.mark.asyncio
-<<<<<<< HEAD
-    async def test_run_replaces_final_message_with_writer_markdown(self, mock_llm_provider, real_tool):
-        """The final answer comes from /shared/output.md."""
-=======
     async def test_run_empty_source_registry_returns_unverified_status(
         self, mock_llm_provider, real_tool, mock_create_deep_agent
     ):
@@ -1046,7 +1042,10 @@ class TestDeepResearcherAgent:
 
         Regression for issue #235: previously raised EmptySourceRegistryError and lost the report.
         """
-        with patch("aiq_agent.agents.deep_researcher.agent.create_deep_agent", return_value=mock_create_deep_agent):
+        with patch(
+            "aiq_agent.agents.deep_researcher.factory.create_deep_agent",
+            return_value=mock_create_deep_agent,
+        ):
             from aiq_agent.agents.deep_researcher.agent import DeepResearcherAgent
 
             agent = DeepResearcherAgent(
@@ -1072,7 +1071,10 @@ class TestDeepResearcherAgent:
         self, mock_llm_provider, real_tool, mock_create_deep_agent
     ):
         """When sources are captured, citation_verification_status stays None (verified path)."""
-        with patch("aiq_agent.agents.deep_researcher.agent.create_deep_agent", return_value=mock_create_deep_agent):
+        with patch(
+            "aiq_agent.agents.deep_researcher.factory.create_deep_agent",
+            return_value=mock_create_deep_agent,
+        ):
             from aiq_agent.agents.deep_researcher.agent import DeepResearcherAgent
 
             agent = DeepResearcherAgent(
@@ -1089,9 +1091,8 @@ class TestDeepResearcherAgent:
             assert result.citation_verification_status is None
 
     @pytest.mark.asyncio
-    async def test_run_preserves_valid_message_content(self, mock_llm_provider, real_tool):
-        """Test run() preserves valid message content unchanged."""
->>>>>>> 40dc638 (refactor: update citation verification handling in DeepResearcherAgent)
+    async def test_run_replaces_final_message_with_writer_markdown(self, mock_llm_provider, real_tool):
+        """The final answer comes from /shared/output.md."""
         result_messages = [
             HumanMessage(content="Original query"),
             AIMessage(content="I'll help with that."),
