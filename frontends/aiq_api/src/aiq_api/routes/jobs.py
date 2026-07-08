@@ -1184,13 +1184,12 @@ def _find_stale_jobs(db_url: str, running_status: str) -> list[str]:
 
     from ..jobs.event_store import EventStore
 
+    # Ensure job_events exists so the LEFT JOIN resolves (it need not have rows).
     EventStore._ensure_table_exists(db_url)
     engine = EventStore._get_or_create_sync_engine(db_url)
     inspector = inspect(engine)
     # The query is driven from job_info; without it there are no jobs to reap.
-    # job_events is LEFT JOINed, so it need not have rows, but the table must
-    # exist for the join to resolve.
-    if not inspector.has_table("job_info") or not inspector.has_table("job_events"):
+    if not inspector.has_table("job_info"):
         return []
 
     with engine.connect() as conn:
