@@ -1187,26 +1187,37 @@ def _find_stale_jobs(db_url: str, running_status: str) -> list[str]:
     EventStore._ensure_table_exists(db_url)
     engine = EventStore._get_or_create_sync_engine(db_url)
     inspector = inspect(engine)
-    if not inspector.has_table("job_events"):
+    # The query is driven from job_info; without it there are no jobs to reap.
+    # job_events is LEFT JOINed, so it need not have rows, but the table must
+    # exist for the join to resolve.
+    if not inspector.has_table("job_info") or not inspector.has_table("job_events"):
         return []
 
     with engine.connect() as conn:
+        # Drive from job_info with a LEFT JOIN so a RUNNING job that has not
+        # persisted any events yet is still considered. That is exactly the
+        # failure this reaper exists to catch: a worker that crashes/OOMs after
+        # the job is marked RUNNING but before its first event is stored leaves
+        # zero rows in job_events and would be invisible to an INNER JOIN,
+        # sticking the job in RUNNING forever. COALESCE falls back to
+        # job_info.updated_at (set when the job entered RUNNING) when there are
+        # no events, so both cases share one staleness check.
         if db_url.startswith("postgresql"):
             stale_query = text(
-                "SELECT DISTINCT je.job_id FROM job_events je "
-                "INNER JOIN job_info ji ON je.job_id = ji.job_id "
+                "SELECT ji.job_id FROM job_info ji "
+                "LEFT JOIN job_events je ON je.job_id = ji.job_id "
                 "WHERE ji.status = :running_status "
-                "GROUP BY je.job_id "
-                "HAVING MAX(je.created_at) < NOW() - :timeout * INTERVAL '1 second'"
+                "GROUP BY ji.job_id, ji.updated_at "
+                "HAVING COALESCE(MAX(je.created_at), ji.updated_at) < NOW() - :timeout * INTERVAL '1 second'"
             )
             params = {"running_status": running_status, "timeout": GHOST_JOB_TIMEOUT_SECONDS}
         else:
             stale_query = text(
-                "SELECT DISTINCT je.job_id FROM job_events je "
-                "INNER JOIN job_info ji ON je.job_id = ji.job_id "
+                "SELECT ji.job_id FROM job_info ji "
+                "LEFT JOIN job_events je ON je.job_id = ji.job_id "
                 "WHERE ji.status = :running_status "
-                "GROUP BY je.job_id "
-                "HAVING MAX(je.created_at) < datetime('now', :timeout_interval)"
+                "GROUP BY ji.job_id, ji.updated_at "
+                "HAVING COALESCE(MAX(je.created_at), ji.updated_at) < datetime('now', :timeout_interval)"
             )
             params = {
                 "running_status": running_status,
@@ -1222,8 +1233,11 @@ async def _reap_ghost_jobs(job_store, db_url: str) -> None:
     Background task that periodically marks stale RUNNING jobs as FAILURE.
 
     A job is considered "ghost" if it has been RUNNING for over
-    GHOST_JOB_TIMEOUT_SECONDS with no new events in the job_events table.
-    This catches Dask worker crashes and OOM kills that bypass Python exception handling.
+    GHOST_JOB_TIMEOUT_SECONDS with no new events in the job_events table, OR if
+    it has been RUNNING that long without ever storing an event (measured from
+    job_info.updated_at). This catches Dask worker crashes and OOM kills that
+    bypass Python exception handling, including a crash before the first event
+    is persisted.
     """
     from nat.front_ends.fastapi.async_jobs.job_store import JobStatus
 
