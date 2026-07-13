@@ -17,9 +17,11 @@
 
 from aiq_agent.knowledge import AvailableDocument
 
+from .escalation import ShallowEscalationAssessment
 from .state import ShallowResearchAgentState
 
 __all__ = [
     "AvailableDocument",
+    "ShallowEscalationAssessment",
     "ShallowResearchAgentState",
 ]

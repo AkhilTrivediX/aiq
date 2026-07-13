@@ -24,6 +24,8 @@ from pydantic import BaseModel
 
 from aiq_agent.knowledge import AvailableDocument
 
+from .escalation import ShallowEscalationAssessment
+
 
 class ShallowResearchAgentState(BaseModel):
     """
@@ -37,6 +39,9 @@ class ShallowResearchAgentState(BaseModel):
         available_documents: User-uploaded documents with summaries for context.
         collection_name: Knowledge collection name (for fetching documents).
         tool_iterations: Counter for tool-calling iterations.
+        retrieved_source_count: Number of source entries returned during this invocation.
+        assess_escalation: Whether to run the bounded post-answer assessment.
+        escalation_assessment: Validated recommendation returned by that assessment.
     """
 
     messages: Annotated[list[AnyMessage], add_messages]
@@ -46,3 +51,6 @@ class ShallowResearchAgentState(BaseModel):
     available_documents: list[AvailableDocument] | None = None
     collection_name: str | None = None
     tool_iterations: int = 0
+    retrieved_source_count: int = 0
+    assess_escalation: bool = False
+    escalation_assessment: ShallowEscalationAssessment | None = None

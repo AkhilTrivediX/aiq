@@ -21,6 +21,7 @@ import logging
 import os
 import re
 from collections.abc import Sequence
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt import tools_condition
 
+from aiq_agent.common import get_latest_user_query
 from aiq_agent.common import get_source_id_for_tool
 from aiq_agent.common import load_prompt
 from aiq_agent.common import render_prompt_template
@@ -48,9 +50,24 @@ from aiq_agent.common.citation_verification import verify_citations
 
 from ...common import LLMProvider
 from ...common import LLMRole
+from .escalation import ShallowEscalationAssessor
 from .models import ShallowResearchAgentState
 
 logger = logging.getLogger(__name__)
+
+_invocation_source_keys: ContextVar[set[tuple[str, str]] | None] = ContextVar(
+    "shallow_invocation_source_keys",
+    default=None,
+)
+
+
+def _source_identity(source: SourceEntry) -> tuple[str, str] | None:
+    """Return a stable invocation-local identity for a retrieved source."""
+    if source.url:
+        return ("url", source.url.strip())
+    if source.citation_key:
+        return ("citation_key", source.citation_key.strip().casefold())
+    return None
 
 
 # Path to this agent's directory (for loading prompts)
@@ -293,6 +310,7 @@ class ShallowResearcherAgent:
             # Resolve registry at call time (not build time) so each request
             # writes to its own session-scoped registry when available.
             active_registry = get_session_registry() or self.source_registry
+            invocation_source_keys = _invocation_source_keys.get()
             for msg in result.get("messages", []):
                 if isinstance(msg, ToolMessage) and msg.content:
                     tool_name = getattr(msg, "name", "") or ""
@@ -308,6 +326,9 @@ class ShallowResearcherAgent:
                     sources = extract_sources_from_tool_result(tool_name, str(msg.content), source_id=source_id)
                     for source in sources:
                         active_registry.add(source)
+                        source_identity = _source_identity(source)
+                        if invocation_source_keys is not None and source_identity is not None:
+                            invocation_source_keys.add(source_identity)
                     if sources:
                         logger.info(
                             "[CitationRegistry] Captured %d source(s) from %s: %s",
@@ -339,6 +360,11 @@ class ShallowResearcherAgent:
         Returns:
             Updated state with response in messages.
         """
+        # Invocation-scoped outputs must not carry forward when a caller reuses a
+        # prior result as input. Conversation-level evidence remains in the source
+        # registry, while this counter reflects only the current shallow attempt.
+        state = state.model_copy(update={"retrieved_source_count": 0, "escalation_assessment": None})
+
         # Resolve the registry for this request: session-scoped (conversation
         # mode) or instance-scoped with clear (standalone mode).  We use a
         # local variable so we never mutate the shared agent instance.
@@ -353,10 +379,16 @@ class ShallowResearcherAgent:
         config = {"recursion_limit": recursion_limit}
         if self.callbacks:
             config["callbacks"] = self.callbacks
-        result = await self._graph.ainvoke(state, config=config)
+        invocation_source_keys: set[tuple[str, str]] = set()
+        invocation_source_keys_token = _invocation_source_keys.set(invocation_source_keys)
+        try:
+            result = await self._graph.ainvoke(state, config=config)
+        finally:
+            _invocation_source_keys.reset(invocation_source_keys_token)
 
         # Post-process: verify citations against source registry
         validated_result = dict(result)
+        validated_result["retrieved_source_count"] = len(invocation_source_keys)
         if validated_result.get("messages"):
             last_msg = validated_result["messages"][-1]
             if hasattr(last_msg, "content") and last_msg.content:
@@ -393,6 +425,20 @@ class ShallowResearcherAgent:
                 # Step 2: sanitize report (strip body URLs, shortened URLs, unsafe URLs)
                 sanitization = sanitize_report(content)
                 content = sanitization.sanitized_report
+
+                # Step 3: when requested by the parent workflow, make one bounded,
+                # tool-free assessment of whether a material research deficiency
+                # warrants escalation. Assessment failures keep the shallow answer.
+                if state.assess_escalation:
+                    assessor = ShallowEscalationAssessor(self._get_llm(), callbacks=self.callbacks)
+                    validated_result["escalation_assessment"] = await assessor.assess(
+                        query=get_latest_user_query(state.messages),
+                        answer=content,
+                        source_count=int(validated_result.get("retrieved_source_count", 0)),
+                        tool_budget_exhausted=(
+                            int(validated_result.get("tool_iterations", 0)) >= self.max_tool_iterations
+                        ),
+                    )
 
                 # Emit verified/sanitized report so the frontend shows the
                 # cleaned version (overwrites the raw draft auto-emitted

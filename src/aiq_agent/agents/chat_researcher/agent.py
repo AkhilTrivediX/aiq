@@ -43,6 +43,7 @@ from langgraph.types import Command
 from aiq_agent.agents.clarifier.models import ClarifierAgentState
 from aiq_agent.agents.clarifier.models import ClarifierResult
 from aiq_agent.agents.deep_researcher.models import DeepResearchAgentState
+from aiq_agent.agents.shallow_researcher.models import ShallowEscalationAssessment
 from aiq_agent.agents.shallow_researcher.models import ShallowResearchAgentState
 from aiq_agent.common import get_latest_user_query
 from aiq_agent.common.citation_verification import EmptySourceRegistryError
@@ -70,6 +71,20 @@ _ESCALATION_KIND_REPORT_EDIT = "report_edit"
 def _job_escalation_message(kind: str, job_id: str) -> str:
     """Serialize an async-job escalation signal as a structured JSON payload."""
     return json.dumps({"type": "job_escalation", "kind": kind, "job_id": job_id})
+
+
+def _should_escalate_shallow(
+    assessment: ShallowEscalationAssessment | None,
+    *,
+    enabled: bool,
+    shallow_result: ShallowResult | None = None,
+) -> bool:
+    """Apply the conservative policy to a validated shallow assessment."""
+    if not enabled:
+        return False
+    if shallow_result is not None and shallow_result.escalate_to_deep is True:
+        return True
+    return bool(assessment is not None and assessment.recommends_escalation)
 
 
 class ChatResearcherAgent:
@@ -193,6 +208,20 @@ class ChatResearcherAgent:
         async def shallow_research_node(state: ChatResearcherState) -> dict[str, Any]:
             trimmed_messages: list[BaseMessage] = trim_message_history(state.messages, self.max_history)
 
+            assess_escalation = self.enable_escalation
+            if assess_escalation and self.validate_deep_research_tools_fn is not None:
+                try:
+                    deep_tools_available, _ = self.validate_deep_research_tools_fn(state.data_sources)
+                    assess_escalation = deep_tools_available
+                    if not deep_tools_available:
+                        logger.info("Shallow escalation assessment skipped reason=deep_research_tools_unavailable")
+                except Exception:
+                    assess_escalation = False
+                    logger.warning(
+                        "Shallow escalation assessment skipped reason=deep_capability_validation_error",
+                        exc_info=True,
+                    )
+
             logger.debug(
                 "shallow_research_node: ChatResearcherState.available_documents = %s",
                 state.available_documents,
@@ -203,6 +232,7 @@ class ChatResearcherAgent:
                     messages=trimmed_messages,
                     data_sources=state.data_sources,
                     available_documents=state.available_documents,
+                    assess_escalation=assess_escalation,
                 )
                 result = await self.shallow_research_fn(shallow_state)
             except EmptySourceRegistryError as exc:
@@ -227,6 +257,7 @@ class ChatResearcherAgent:
                 # source registry or transient failure; the user should rephrase and retry.
                 return {
                     "messages": [AIMessage(content=err_msg)],
+                    "shallow_assessment": None,
                     "shallow_result": ShallowResult(
                         answer=err_msg,
                         confidence="high",
@@ -239,6 +270,7 @@ class ChatResearcherAgent:
                     err_msg = str(e)
                     return {
                         "messages": [AIMessage(content=err_msg)],
+                        "shallow_assessment": None,
                         "shallow_result": ShallowResult(
                             answer=err_msg,
                             confidence="high",
@@ -251,6 +283,7 @@ class ChatResearcherAgent:
                 # occurred; escalating to deep research will not resolve an unexpected exception.
                 return {
                     "messages": [AIMessage(content=err_msg)],
+                    "shallow_assessment": None,
                     "shallow_result": ShallowResult(
                         answer=err_msg,
                         confidence="high",
@@ -260,24 +293,37 @@ class ChatResearcherAgent:
 
             if not result.messages:
                 logger.error("Shallow research agent returned no messages")
+                error_message = "An error occurred during shallow research."
                 return {
+                    "messages": [AIMessage(content=error_message)],
+                    "shallow_assessment": None,
                     "shallow_result": ShallowResult(
-                        answer="An error occurred during shallow research.",
-                        confidence="low",
-                        escalate_to_deep=True,
-                        escalation_reason="Shallow research encountered an error",
-                    )
+                        answer=error_message,
+                        confidence="high",
+                        escalate_to_deep=False,
+                    ),
                 }
+            assessment = getattr(result, "escalation_assessment", None)
+            if not isinstance(assessment, ShallowEscalationAssessment):
+                assessment = None
             new_messages = result.messages[len(trimmed_messages) :]
             final_ai_message = next(
                 (m for m in reversed(new_messages) if isinstance(m, AIMessage) and not m.tool_calls),
                 None,
             )
             if final_ai_message:
-                return {"messages": [final_ai_message], "shallow_result": None}
+                return {
+                    "messages": [final_ai_message],
+                    "shallow_assessment": assessment,
+                    "shallow_result": None,
+                }
             if new_messages:
-                return {"messages": [new_messages[-1]], "shallow_result": None}
-            return {"messages": [], "shallow_result": None}
+                return {
+                    "messages": [new_messages[-1]],
+                    "shallow_assessment": assessment,
+                    "shallow_result": None,
+                }
+            return {"messages": [], "shallow_assessment": None, "shallow_result": None}
 
         async def deep_research_node(state: ChatResearcherState) -> dict[str, Any]:
             if self.deep_research_job_submitter is not None:
@@ -438,38 +484,12 @@ class ChatResearcherAgent:
             return "shallow_research"
 
         def should_escalate(state: ChatResearcherState) -> str:
-            if not self.enable_escalation:
-                return END
-
-            # Respect explicit escalation decision from shallow research.
-            # Successful shallow paths set shallow_result=None so this guard
-            # only fires when shallow explicitly set escalate_to_deep.
-            if state.shallow_result is not None:
-                if state.shallow_result.escalate_to_deep:
-                    return "deep_research"
-                return END
-
-            messages = state.messages
-            if not messages:
-                return END
-
-            last_ai_content = None
-            for m in reversed(messages):
-                if isinstance(m, AIMessage):
-                    last_ai_content = m.content if hasattr(m, "content") else str(m)
-                    break
-            if not last_ai_content:
-                return END
-
-            last_content = last_ai_content if isinstance(last_ai_content, str) else str(last_ai_content)
-            if not last_content.strip():
+            if _should_escalate_shallow(
+                state.shallow_assessment,
+                enabled=self.enable_escalation,
+                shallow_result=state.shallow_result,
+            ):
                 return "deep_research"
-
-            tail = last_content[-800:].lower() if len(last_content) > 800 else last_content.lower()
-            escalation_keywords = ["i don't have enough information", "unable to find", "need more research"]
-            if any(kw in tail for kw in escalation_keywords):
-                return "deep_research"
-
             return END
 
         graph = StateGraph(ChatResearcherState)

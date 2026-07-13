@@ -22,6 +22,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
 "aiq_agent.agents.deep_researcher" = ["skills/**/*"]
+"aiq_agent.agents.shallow_researcher" = ["prompts/*.j2"]
 
 [project]
 name = "aiq-agent"

@@ -22,6 +22,7 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 
+from aiq_agent.agents.shallow_researcher.models import ShallowEscalationAssessment
 from aiq_agent.knowledge import AvailableDocument
 
 from .depth import DepthDecision
@@ -52,6 +53,7 @@ class ChatResearcherState(BaseModel):
         depth_decision: Result of depth routing.
         final_report: The final research report.
         shallow_result: Result from shallow research (if executed).
+        shallow_assessment: Validated post-answer escalation recommendation.
         clarifier_result: Log from clarifier agent dialog.
         original_query: The latest user query, preserved for deep research.
         available_documents: User-uploaded documents with summaries for context.
@@ -67,6 +69,7 @@ class ChatResearcherState(BaseModel):
     depth_decision: DepthDecision | None = None
     final_report: str | None = None
     shallow_result: ShallowResult | None = None
+    shallow_assessment: ShallowEscalationAssessment | None = None
     clarifier_result: str | None = None
     original_query: str | None = None
     available_documents: list[AvailableDocument] | None = None
