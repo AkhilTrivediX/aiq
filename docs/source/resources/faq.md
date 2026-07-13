@@ -40,7 +40,14 @@ questions it asks.
 
 **What happens when shallow research escalates to deep?**
 
-If `enable_escalation: true` in the workflow config, the orchestrator evaluates the shallow research result. If it detects insufficient coverage (response too short, "unable to find" keywords), it escalates to the clarifier and then deep research. The clarifier asks only for missing context; planning happens inside the deep-research workflow. Refer to [Architecture Overview](../architecture/overview.md).
+If `enable_escalation: true` in the workflow config, a successful shallow
+answer receives one bounded, tool-free assessment call. Escalation is reserved
+for a material unmet requirement or a conclusion-critical source conflict that
+deep research has a concrete way to address; response length and keywords do
+not trigger it. A material result routes through the clarifier node and then to
+deep research. The clarifier asks only for missing context or output-shape
+preferences when it is enabled and not skipped; planning happens inside the
+deep-research workflow. Refer to [Architecture Overview](../architecture/overview.md).
 
 **How does deep research choose data sources?**
 

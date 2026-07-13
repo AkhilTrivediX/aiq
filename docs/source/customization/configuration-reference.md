@@ -456,7 +456,7 @@ workflow:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `_type` | `str` | **required** | Workflow type. Use `chat_deepresearcher_agent` for the full pipeline. |
-| `enable_escalation` | `bool` | `true` | Allow the intent classifier to route queries to deep research. When `false`, all research queries use shallow research only. |
+| `enable_escalation` | `bool` | `false` | Enable the bounded post-shallow assessment and allow a material shallow result to route to deep research. This setting does not affect queries that the intent classifier initially routes to deep research. |
 | `enable_clarifier` | `bool` | `true` | Run the clarifier agent before deep research to gather user requirements. |
 | `use_async_deep_research` | `bool` | `false` | Submit deep research as an async background job (requires [Dask](https://www.dask.org/) scheduler). |
 | `max_history` | `int` | `20` | Maximum number of messages to keep in conversation history before trimming. |

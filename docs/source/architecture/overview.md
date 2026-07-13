@@ -62,14 +62,31 @@ graph LR
    `clarifier`.
 
 2. **`should_escalate`** -- After shallow research completes, the graph
-   evaluates whether the response warrants escalation to deep research. It
-   checks for empty responses and escalation keywords ("unable to find",
-   "need more research", "i don't have enough information") in the last
-   800 characters of the AI response. When escalation triggers, the graph
-   routes to the `clarifier` node (not directly to `deep_research`), so it
-   can gather any missing context or output-shape preference before research.
-   Research planning then occurs inside the deep-research workflow.
-   Escalation is gated by the `enable_escalation` config flag.
+   evaluates whether the response warrants escalation to deep research.
+   When escalation is enabled and shallow research completes successfully,
+   the existing shallow-research LLM receives one bounded, JSON-only
+   assessment call with no tools. The assessor sees bounded portions of the
+   original query and final shallow answer, the unique source count for that
+   shallow invocation, and whether the shallow tool budget was exhausted. The
+   complete serialized assessment input is capped at 16,000 characters. It can
+   classify the answer as `sufficient`, `material_gap`, or `material_conflict`.
+
+   Only an explicit or central unmet requirement, or a source conflict that
+   could change the central conclusion, can trigger escalation. A material
+   outcome must also name a concrete deep-research strategy. Budget
+   exhaustion, generic task breadth, minor omissions, and answers that could
+   merely be improved are not escalation triggers. A source conflict requires
+   at least two unique retrieved sources. Invalid, empty, timed-out, or failed
+   assessments default to `sufficient`; shallow research errors are not
+   assessed. The call is also skipped when deep-research tools are unavailable.
+   When a valid material outcome triggers escalation, the graph
+   routes through the `clarifier` node (not directly to `deep_research`). If
+   clarification is enabled and not skipped, it gathers missing context or
+   output-shape preferences; otherwise, the node continues directly to deep
+   research. Research planning then occurs inside the deep-research workflow.
+   For compatibility, an explicit `ShallowResult.escalate_to_deep=true`
+   follows the same clarifier-node route. Escalation is gated by the
+   `enable_escalation` config flag.
 
 ## ChatResearcherState
 
@@ -84,6 +101,7 @@ The central state model carries data through the entire workflow:
 | `depth_decision` | `DepthDecision` or `None` | Routing decision: `shallow` or `deep` |
 | `final_report` | `str` or `None` | Final report output from deep research |
 | `shallow_result` | `ShallowResult` or `None` | Result from shallow research path |
+| `shallow_assessment` | `ShallowEscalationAssessment` or `None` | Validated post-shallow escalation recommendation |
 | `clarifier_result` | `str` or `None` | Clarification log containing missing context or output-shape preferences |
 | `original_query` | `str` or `None` | Preserved user query for deep research |
 | `available_documents` | `list[AvailableDocument]` or `None` | User-uploaded documents with summaries |
@@ -120,6 +138,12 @@ The central state model carries data through the entire workflow:
 - **Evaluation-driven defaults**: Routing and research budgets are tuned
   through benchmarks (FreshQA, Deep Research Bench) and can evolve as
   evaluation scores improve.
+
+- **Conservative escalation**: Post-shallow escalation uses a validated,
+  fail-closed assessment instead of matching phrases in the answer. The
+  assessment is intentionally a single tool-free model call, and automatic
+  escalation is reserved for material gaps or conflicts that deep research
+  has a concrete way to address.
 
 - **Citation verification and auditability**: Research paths capture sources
   for deterministic citation checks and URL sanitization. Deep-research

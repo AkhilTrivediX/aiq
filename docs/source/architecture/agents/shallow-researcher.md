@@ -76,6 +76,54 @@ graph LR
 The recursion limit is set to `(max_llm_turns * 2) + 10` to account for
 the agent-tools round trips plus headroom.
 
+## Post-Shallow Escalation Assessment
+
+When the shallow researcher runs inside the top-level chat workflow, a
+successful final answer can be evaluated for escalation to deep research.
+This assessment is not part of the research loop and does not invoke the
+clarifier, planner, researchers, or writer. It is one additional bounded call
+to the existing shallow-research LLM with:
+
+- no bound tools
+- temperature set to 0
+- a maximum output of 256 tokens
+- reasoning disabled when the model provider exposes a per-call thinking switch
+- at most 3,000 JSON-encoded characters from the query and 12,000 from the final answer
+- a hard 16,000-character limit for the complete serialized assessment payload
+- the number of unique sources retrieved in this invocation and whether the tool budget was exhausted
+
+The assessor returns JSON matching one of three statuses:
+
+| Status | Meaning |
+| ------ | ------- |
+| `sufficient` | The shallow answer satisfies the central request, or any limitation does not justify deep research. |
+| `material_gap` | An explicit or central requirement is unsupported, and a concrete deep-research strategy could address it. |
+| `material_conflict` | Retrieved evidence conflicts on a conclusion-critical point, and a concrete deep-research strategy could reconcile it. |
+
+`material_conflict` also has a deterministic evidence guard: fewer than two
+unique sources cannot establish a source conflict and resolves to `sufficient`.
+
+The assessment is deliberately conservative. Budget exhaustion only explains
+why the shallow loop stopped; it does not by itself justify spending a deep
+research budget. Generic breadth, minor omissions, opportunities to improve
+the answer, infrastructure failures, and information that deep research has
+no credible way to obtain also remain on the shallow path.
+
+Malformed JSON, invalid field combinations, empty responses, timeouts, and
+model failures all fail closed to `sufficient`. Source, authentication, and
+other shallow execution failures skip the assessment entirely. Standalone
+uses of the shallow researcher and top-level workflows with
+`enable_escalation: false` do not make the additional model call.
+The top-level workflow also skips the call when its deep-research tool
+validation says that deep research cannot execute.
+
+The top-level `ChatResearcherAgent`, rather than the shallow researcher,
+controls routing. A valid `material_gap` or `material_conflict` recommendation
+routes to the clarifier before deep research; it never invokes the deep
+researcher directly. Initial broad or complex queries should still be routed
+to deep research by the intent classifier rather than relying on this
+post-shallow fallback.
+
 ## State Model
 
 ### ShallowResearchAgentState
@@ -89,6 +137,9 @@ the agent-tools round trips plus headroom.
 | `available_documents` | `list[AvailableDocument]` or `None` | `None` | User-uploaded documents with summaries |
 | `collection_name` | `str` or `None` | `None` | Knowledge collection name |
 | `tool_iterations` | `int` | `0` | Counter tracking total tool calls made |
+| `retrieved_source_count` | `int` | `0` | Unique sources returned during this shallow invocation; does not include prior conversation turns |
+| `assess_escalation` | `bool` | `false` | Enables the bounded post-answer assessment when invoked by the top-level chat workflow |
+| `escalation_assessment` | `ShallowEscalationAssessment` or `None` | `None` | Validated assessment result; invalid or failed assessments resolve to `sufficient` |
 
 ## Configuration
 

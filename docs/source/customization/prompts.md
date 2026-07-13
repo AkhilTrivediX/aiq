@@ -13,6 +13,7 @@ Each agent in the AI-Q blueprint uses [Jinja2](https://jinja.palletsprojects.com
 |----------|----------|---------|
 | `src/aiq_agent/agents/chat_researcher/prompts/intent_classification.j2` | Intent Classifier | Classifies queries as meta or research, determines depth (shallow/deep), generates meta responses |
 | `src/aiq_agent/agents/shallow_researcher/prompts/researcher.j2` | Shallow Researcher | Defines the research persona, tool usage strategy, source hierarchy, and citation rules |
+| `src/aiq_agent/agents/shallow_researcher/prompts/escalation_assessment.j2` | Shallow Escalation Assessor | Classifies completed shallow answers as sufficient, materially incomplete, or materially conflicted |
 | `src/aiq_agent/agents/deep_researcher/prompts/orchestrator.j2` | Deep Research Orchestrator | Coordinates ordered routing, planning, batched research, and writer delegation; it does not call source tools directly |
 | `src/aiq_agent/agents/deep_researcher/prompts/source_router.j2` | Source Router | Selects an advisory route from the request-allowed source catalog before planning |
 | `src/aiq_agent/agents/deep_researcher/prompts/planner.j2` | Deep Research Planner | Grounds and returns a structured `ResearchPlan` with independent `ResearchQuery` objects |
@@ -29,7 +30,8 @@ Each agent stores its prompts in a `prompts/` subdirectory co-located with the a
 src/aiq_agent/agents/
     shallow_researcher/
         prompts/
-            researcher.j2              # Single system prompt
+            researcher.j2              # Research system prompt
+            escalation_assessment.j2   # Post-shallow routing assessment
     deep_researcher/
         prompts/
             orchestrator.j2            # Orchestrator prompt
