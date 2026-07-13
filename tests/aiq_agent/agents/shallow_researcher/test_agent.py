@@ -15,6 +15,7 @@
 
 """Tests for the ShallowResearcherAgent."""
 
+import json
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -26,6 +27,8 @@ from langchain_core.tools import tool
 
 from aiq_agent.agents.shallow_researcher.agent import ShallowResearcherAgent
 from aiq_agent.agents.shallow_researcher.agent import _append_minimal_citation
+from aiq_agent.agents.shallow_researcher.escalation import ShallowEscalationAssessor
+from aiq_agent.agents.shallow_researcher.models import ShallowEscalationAssessment
 from aiq_agent.agents.shallow_researcher.models import ShallowResearchAgentState
 from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
@@ -330,6 +333,218 @@ class TestShallowResearcherAgent:
         assert result is not None
         # The unbounded LLM should have been called (without tools)
         mock_llm.ainvoke.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_successful_run_assesses_escalation_exactly_once(
+        self,
+        mock_llm_provider,
+        mock_llm,
+        real_tool,
+    ):
+        """The parent-requested post-processing path makes one assessment."""
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="CUDA is a computing platform [1]."))
+        assessment = ShallowEscalationAssessment.sufficient()
+
+        with patch.object(ShallowEscalationAssessor, "assess", new=AsyncMock(return_value=assessment)) as assess:
+            agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[real_tool])
+            result = await agent.run(
+                ShallowResearchAgentState(
+                    messages=[HumanMessage(content="What is CUDA?")],
+                    assess_escalation=True,
+                )
+            )
+
+        assess.assert_awaited_once()
+        assert assess.await_args.kwargs == {
+            "query": "What is CUDA?",
+            "answer": "CUDA is a computing platform [1].",
+            "source_count": 0,
+            "tool_budget_exhausted": False,
+        }
+        assert result.escalation_assessment == assessment
+
+    @pytest.mark.asyncio
+    async def test_assessor_bounds_complete_payload_and_tags_model_run(self, mock_llm):
+        """The complete serialized input is bounded and observable as its own phase."""
+        mock_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(
+                content=json.dumps(
+                    {
+                        "status": "sufficient",
+                        "unresolved_requirement": None,
+                        "material_conflict": None,
+                        "deep_research_strategy": None,
+                    }
+                )
+            )
+        )
+        assessor = ShallowEscalationAssessor(mock_llm)
+        query = "QUERY-BEGIN\n" + ("\n" * 20_000) + "\nQUERY-END"
+        answer = "ANSWER-BEGIN\n" + ("\\" * 20_000) + "\nANSWER-END"
+
+        await assessor.assess(
+            query=query,
+            answer=answer,
+            source_count=1,
+            tool_budget_exhausted=False,
+        )
+
+        messages = mock_llm.ainvoke.await_args.args[0]
+        serialized_payload = messages[1].content
+        assert len(serialized_payload) <= 16_000
+        payload = json.loads(serialized_payload)
+        assert payload["user_query"].startswith("QUERY-BEGIN")
+        assert payload["user_query"].endswith("QUERY-END")
+        assert payload["shallow_answer"].startswith("ANSWER-BEGIN")
+        assert payload["shallow_answer"].endswith("ANSWER-END")
+        assert payload["retrieved_source_count"] == 1
+        assert "verified_source_count" not in payload
+        config = mock_llm.ainvoke.await_args.kwargs["config"]
+        assert config["run_name"] == "shallow_escalation_assessment"
+        assert "shallow-escalation-assessment" in config["tags"]
+        assert config["metadata"]["aiq_phase"] == "shallow_escalation_assessment"
+
+    @pytest.mark.asyncio
+    async def test_material_conflict_requires_two_unique_sources(self, mock_llm):
+        """A single retrieved source cannot establish a source conflict."""
+        mock_llm.ainvoke = AsyncMock(
+            return_value=AIMessage(
+                content=json.dumps(
+                    {
+                        "status": "material_conflict",
+                        "unresolved_requirement": None,
+                        "material_conflict": "The specifications disagree.",
+                        "deep_research_strategy": "Compare both primary specifications.",
+                    }
+                )
+            )
+        )
+        assessor = ShallowEscalationAssessor(mock_llm)
+
+        assessment = await assessor.assess(
+            query="Which specification is correct?",
+            answer="The retrieved material reports conflicting values.",
+            source_count=1,
+            tool_budget_exhausted=False,
+        )
+
+        assert assessment == ShallowEscalationAssessment.sufficient()
+
+    @pytest.mark.asyncio
+    async def test_standalone_run_does_not_assess_escalation(
+        self,
+        mock_llm_provider,
+        mock_llm,
+        real_tool,
+    ):
+        """The default standalone shallow workflow incurs no assessment call."""
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="CUDA is a computing platform [1]."))
+
+        with patch.object(ShallowEscalationAssessor, "assess", new=AsyncMock()) as assess:
+            agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[real_tool])
+            result = await agent.run(ShallowResearchAgentState(messages=[HumanMessage(content="What is CUDA?")]))
+
+        assess.assert_not_awaited()
+        assert result.escalation_assessment is None
+
+    @pytest.mark.asyncio
+    async def test_run_resets_invocation_scoped_outputs(
+        self,
+        mock_llm_provider,
+        mock_llm,
+        real_tool,
+    ):
+        """Reusing a prior result cannot leak its assessment or source count."""
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="CUDA is a computing platform [1]."))
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[real_tool])
+        state = ShallowResearchAgentState(
+            messages=[HumanMessage(content="What is CUDA?")],
+            retrieved_source_count=99,
+            escalation_assessment=ShallowEscalationAssessment(
+                status="material_gap",
+                unresolved_requirement="Stale gap",
+                deep_research_strategy="Stale strategy",
+            ),
+        )
+
+        result = await agent.run(state)
+
+        assert result.retrieved_source_count == 0
+        assert result.escalation_assessment is None
+
+    @pytest.mark.asyncio
+    async def test_assessment_provider_failure_preserves_shallow_answer(
+        self,
+        mock_llm_provider,
+        mock_llm,
+        real_tool,
+    ):
+        """A failed second model call fails closed without discarding the answer."""
+        mock_llm.ainvoke = AsyncMock(
+            side_effect=[
+                AIMessage(content="CUDA is a computing platform [1]."),
+                TimeoutError("assessment timed out"),
+            ]
+        )
+        agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[real_tool])
+
+        result = await agent.run(
+            ShallowResearchAgentState(
+                messages=[HumanMessage(content="What is CUDA?")],
+                assess_escalation=True,
+            )
+        )
+
+        assert mock_llm.ainvoke.await_count == 2
+        assert result.messages[-1].content == "CUDA is a computing platform [1]."
+        assert result.escalation_assessment == ShallowEscalationAssessment.sufficient()
+
+    @pytest.mark.asyncio
+    async def test_source_failure_does_not_assess_escalation(
+        self,
+        mock_llm_provider,
+        mock_llm,
+        real_tool,
+    ):
+        """Citation/source failure occurs before the optional assessment."""
+        mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Unverified answer"))
+
+        with (
+            patch.object(SourceRegistry, "all_sources", return_value=[]),
+            patch.object(ShallowEscalationAssessor, "assess", new=AsyncMock()) as assess,
+        ):
+            agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[real_tool])
+            with pytest.raises(EmptySourceRegistryError):
+                await agent.run(
+                    ShallowResearchAgentState(
+                        messages=[HumanMessage(content="Research this.")],
+                        assess_escalation=True,
+                    )
+                )
+
+        assess.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_research_execution_failure_does_not_assess_escalation(
+        self,
+        mock_llm_provider,
+        mock_llm,
+        real_tool,
+    ):
+        """A failed shallow model/tool loop cannot initiate an assessment."""
+        mock_llm.ainvoke = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+
+        with patch.object(ShallowEscalationAssessor, "assess", new=AsyncMock()) as assess:
+            agent = ShallowResearcherAgent(llm_provider=mock_llm_provider, tools=[real_tool])
+            with pytest.raises(RuntimeError, match="provider unavailable"):
+                await agent.run(
+                    ShallowResearchAgentState(
+                        messages=[HumanMessage(content="Research this.")],
+                        assess_escalation=True,
+                    )
+                )
+
+        assess.assert_not_awaited()
 
     def test_state_has_tool_iterations_field(self):
         """Test that ShallowResearchAgentState has tool_iterations field."""
@@ -691,9 +906,38 @@ class TestShallowResearcherSourceCaptureIntegration:
         sources = agent.source_registry.all_sources()
         assert len(sources) >= 1
         assert any(s.url == "https://docs.nvidia.com/cuda/" for s in sources)
+        assert result.retrieved_source_count == 1
 
         # Final output should exist and have been processed
         assert result.messages[-1].content
+
+    @pytest.mark.asyncio
+    async def test_retrieved_source_count_is_unique_within_invocation(self, mock_llm_provider, mock_llm):
+        """Repeated retrieval of the same logical source counts once for escalation."""
+        first_tool_call = AIMessage(
+            content="",
+            tool_calls=[{"name": "web_search_with_urls", "args": {"query": "CUDA"}, "id": "1"}],
+        )
+        second_tool_call = AIMessage(
+            content="",
+            tool_calls=[{"name": "web_search_with_urls", "args": {"query": "CUDA docs"}, "id": "2"}],
+        )
+        final_response = AIMessage(
+            content=(
+                "CUDA is a parallel computing platform [1].\n\n"
+                "## Sources\n"
+                "[1] CUDA Toolkit Documentation: https://docs.nvidia.com/cuda/"
+            )
+        )
+        mock_llm.ainvoke = AsyncMock(side_effect=[first_tool_call, second_tool_call, final_response])
+        agent = ShallowResearcherAgent(
+            llm_provider=mock_llm_provider,
+            tools=[web_search_with_urls],
+        )
+
+        result = await agent.run(ShallowResearchAgentState(messages=[HumanMessage(content="What is CUDA?")]))
+
+        assert result.retrieved_source_count == 1
 
     @pytest.mark.asyncio
     async def test_invalid_citation_removed_end_to_end(self, mock_llm_provider, mock_llm):
