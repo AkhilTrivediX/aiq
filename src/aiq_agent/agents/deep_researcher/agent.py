@@ -139,6 +139,7 @@ class DeepResearcherAgent:
             tool_set=self.tool_set,
             source_registry_middleware=self.source_registry_middleware,
             enable_source_router=self.enable_source_router,
+            artifact_manager=self.deepagents_runtime.artifact_manager,
         )
 
         self.source_tool_names = self.tool_set.source_tool_names
@@ -180,10 +181,15 @@ class DeepResearcherAgent:
             max_research_concurrency=self.max_research_concurrency,
         )
 
-    def _extract_final_markdown(self, result: dict | Any) -> str | None:
+    def _extract_final_markdown(self, result: dict | Any, files: dict[str, Any] | None = None) -> str | None:
         """Extract final Markdown from output files."""
         output_paths = ("/shared/output.md", "/output.md")
-        files = result.get("files", {}) if isinstance(result, dict) else getattr(result, "files", {})
+        # Resolve result files first, then fall back to the passed-in files (state.files) and
+        # finally an empty dict. Without the explicit grouping, `or files or {}` bound only to
+        # the else branch, so a dict result lacking a usable "files" key silently discarded the
+        # fallback and skipped straight to inline salvage even when output files existed.
+        result_files = result.get("files", None) if isinstance(result, dict) else getattr(result, "files", None)
+        files = result_files or files or {}
         if isinstance(files, dict):
             for output_path in output_paths:
                 output_entry = files.get(output_path)
@@ -272,7 +278,7 @@ class DeepResearcherAgent:
         try:
             result = await agent.ainvoke(state, config={"callbacks": self.callbacks} if self.callbacks else None)
 
-            final_message = self._extract_final_markdown(result)
+            final_message = self._extract_final_markdown(result, state.files)
             if final_message is None:
                 raise ValueError("writer-agent did not produce a final Markdown answer")
 

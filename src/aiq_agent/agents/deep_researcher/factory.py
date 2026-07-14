@@ -41,7 +41,9 @@ from aiq_agent.common import LLMProvider
 from aiq_agent.common import LLMRole
 from aiq_agent.common import render_prompt_template
 
+from .custom_middleware import ArtifactHarvestMiddleware
 from .custom_middleware import EmptyContentFixMiddleware
+from .custom_middleware import ExecuteTimeoutClampMiddleware
 from .custom_middleware import PlanPersistenceMiddleware
 from .custom_middleware import SourceRegistryMiddleware
 from .custom_middleware import SourceRoutingGuardMiddleware
@@ -200,13 +202,14 @@ def build_common_middleware(
     *,
     tool_set: DeepResearchToolSet,
     source_registry_middleware: SourceRegistryMiddleware,
+    artifact_manager: object | None = None,
     extra_valid_tool_names: Sequence[str] = (),
 ) -> list[Any]:
     """Build the shared middleware stack with agent-specific valid tool names."""
     valid_tool_names = {tool.name for tool in [*tool_set.all_tools, *tool_set.researcher_tools]}
     valid_tool_names.update(FILESYSTEM_TOOL_NAMES)
     valid_tool_names.update(extra_valid_tool_names)
-    return [
+    middleware: list[Any] = [
         EmptyContentFixMiddleware(),
         ToolNameSanitizationMiddleware(valid_tool_names=sorted(valid_tool_names)),
         ToolRetryMiddleware(max_retries=3, backoff_factor=2.0, initial_delay=1.0),
@@ -214,6 +217,9 @@ def build_common_middleware(
         ToolResultPruningMiddleware(keep_last_n=10, max_chars=2000),
         ModelRetryMiddleware(max_retries=2, backoff_factor=2.0, initial_delay=1.0),
     ]
+    if artifact_manager is not None:
+        middleware.append(ArtifactHarvestMiddleware(artifact_manager))
+    return middleware
 
 
 def build_orchestrator_middleware(
@@ -262,6 +268,7 @@ def build_deep_research_middleware_set(
     tool_set: DeepResearchToolSet,
     source_registry_middleware: SourceRegistryMiddleware,
     enable_source_router: bool = True,
+    artifact_manager: object | None = None,
 ) -> DeepResearchMiddlewareSet:
     """Build researcher, writer, and orchestrator middleware stacks."""
 
@@ -270,6 +277,7 @@ def build_deep_research_middleware_set(
         return build_common_middleware(
             tool_set=tool_set,
             source_registry_middleware=source_registry_middleware,
+            artifact_manager=artifact_manager,
             extra_valid_tool_names=extra_valid_tool_names,
         )
 
@@ -485,6 +493,17 @@ def build_deep_research_graph(
     enable_source_router: bool = True,
 ) -> Any:
     """Build the full DeepAgents graph for one deep research run."""
+    # Cross-cutting middleware applied to every agent (researcher, subagents, orchestrator).
+    # Agent-supplied execute timeouts are unreliable (LLMs pass milliseconds or arbitrarily
+    # large values); clamp them to the configured sandbox lifetime so a single execute never
+    # exceeds the provider's hard cap and silently fails every code run.
+    cross_cutting_middleware = runtime_visibility_middleware(runtime)
+    execute_ceiling = runtime.execute_timeout_seconds
+    if execute_ceiling:
+        cross_cutting_middleware = [
+            ExecuteTimeoutClampMiddleware(max_timeout_seconds=execute_ceiling),
+            *cross_cutting_middleware,
+        ]
     context = DeepResearchGraphContext(
         llm_provider=llm_provider,
         state=state,
@@ -498,7 +517,7 @@ def build_deep_research_graph(
         max_research_concurrency=max_research_concurrency,
         enable_source_router=enable_source_router,
         backend=runtime.backend,
-        visibility_middleware=runtime_visibility_middleware(runtime),
+        visibility_middleware=cross_cutting_middleware,
     )
     researcher_model = context.llm_provider.get(LLMRole.RESEARCHER)
     researcher_skill_sources = context.skill_sources(RESEARCHER_AGENT)
