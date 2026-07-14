@@ -2404,7 +2404,7 @@ export const useChatStore = create<ChatStore>()(
         },
 
         hydrateDeepResearchFromMessage: (jobId: string): boolean => {
-          const { currentConversation, conversations } = get()
+          const { currentConversation, conversations, currentUserId } = get()
           const findInConversation = (conv?: Conversation | null): ChatMessage | undefined =>
             conv?.messages.find(
               (m) =>
@@ -2413,9 +2413,10 @@ export const useChatStore = create<ChatStore>()(
                   (m.deepResearchAgents?.length ?? 0) > 0)
             )
 
+          const ownConversations = conversations.filter((c) => c.userId === currentUserId)
           const message =
             findInConversation(currentConversation) ??
-            conversations.map(findInConversation).find(Boolean)
+            ownConversations.map(findInConversation).find(Boolean)
 
           if (!message) return false
 

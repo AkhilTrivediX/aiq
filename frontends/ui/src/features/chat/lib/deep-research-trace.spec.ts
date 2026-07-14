@@ -147,4 +147,14 @@ describe('deepResearchToThinkingSteps', () => {
     const childIds = steps.filter((s) => !s.isTopLevel).map((s) => s.id)
     expect(childIds).toEqual(['early', 'late'])
   })
+
+  test('preserves a tool call whose referenced agent is missing', () => {
+    const steps = deepResearchToThinkingSteps(
+      [agent({ id: 'a1' })],
+      [tool({ id: 'orphan', name: 'web_search_tool', agentId: 'ghost' })]
+    )
+    const orphan = steps.find((s) => s.id === 'orphan')
+    expect(orphan).toBeDefined()
+    expect(orphan?.isTopLevel).toBe(true)
+  })
 })

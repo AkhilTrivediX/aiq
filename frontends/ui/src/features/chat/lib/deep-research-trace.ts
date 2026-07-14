@@ -101,6 +101,7 @@ export const deepResearchToThinkingSteps = (
 ): ThinkingStep[] => {
   const steps: ThinkingStep[] = []
   const orderedAgents = [...agents].sort((a, b) => ms(a.startedAt) - ms(b.startedAt))
+  const agentIds = new Set(agents.map((a) => a.id))
 
   for (const agent of orderedAgents) {
     const input = (agent.input ?? '').trim()
@@ -127,7 +128,7 @@ export const deepResearchToThinkingSteps = (
   }
 
   toolCalls
-    .filter((tc) => !tc.agentId)
+    .filter((tc) => !tc.agentId || !agentIds.has(tc.agentId))
     .sort((a, b) => ms(a.timestamp) - ms(b.timestamp))
     .forEach((tc) => steps.push(...withTool(tc, true)))
 
