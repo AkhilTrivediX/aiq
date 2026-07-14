@@ -14,6 +14,7 @@
 'use client'
 
 import type { FC, ReactNode } from 'react'
+import { useId } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { Flex, AnimatedChevron } from '@/adapters/ui'
 
@@ -42,6 +43,7 @@ export const CollapsibleBlock: FC<CollapsibleBlockProps> = ({
   collapsible = true,
   children,
 }) => {
+  const regionId = useId()
   const header = (
     <>
       <Flex align="center" gap="2" className="min-w-0">
@@ -64,6 +66,7 @@ export const CollapsibleBlock: FC<CollapsibleBlockProps> = ({
           type="button"
           onClick={() => onOpenChange?.(!open)}
           aria-expanded={open}
+          aria-controls={regionId}
           className="group flex w-full items-center justify-between rounded-[var(--radius-card)] py-1.5 text-left transition-colors"
         >
           {header}
@@ -75,6 +78,7 @@ export const CollapsibleBlock: FC<CollapsibleBlockProps> = ({
       <AnimatePresence initial={false}>
         {(open || !collapsible) && (
           <motion.div
+            id={regionId}
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}

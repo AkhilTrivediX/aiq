@@ -37,7 +37,18 @@ export function SourceList({ sources, className, title = 'Sources' }: SourceList
               <span className="text-subtle mt-px shrink-0">
                 <SourceKindIcon kind={s.kind} className="h-3 w-3" />
               </span>
-              <span className="min-w-0 break-words">{s.label}</span>
+              {s.url ? (
+                <a
+                  href={s.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="hover:text-[color:var(--color-green-500)] min-w-0 break-words underline-offset-2 hover:underline"
+                >
+                  {s.label}
+                </a>
+              ) : (
+                <span className="min-w-0 break-words">{s.label}</span>
+              )}
               {s.url && showDomain && (
                 <a
                   href={s.url}

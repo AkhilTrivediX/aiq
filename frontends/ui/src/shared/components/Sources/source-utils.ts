@@ -50,7 +50,7 @@ export function mapCitationSource(
   return {
     id: cs.id || `src-${index}`,
     title: firstLine || label || cs.url || `Source ${index + 1}`,
-    url: /^https?:\/\//i.test(cs.url) ? cs.url : undefined,
+    url: kind === 'web' ? cs.url : undefined,
     snippet: cs.content || undefined,
     kind,
     label: label || `Source ${index + 1}`,

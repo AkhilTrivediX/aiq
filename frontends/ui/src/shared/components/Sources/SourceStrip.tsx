@@ -75,6 +75,7 @@ export function SourceStrip({ sources, previewCount = 4, className }: SourceStri
           <button
             type="button"
             onClick={() => setExpanded(true)}
+            aria-expanded={expanded}
             className="bg-surface-raised border-base text-secondary hover:bg-surface-sunken hover:text-primary flex flex-col items-start justify-center gap-1 rounded-[var(--radius-card)] border p-3 text-sm transition-colors"
           >
             <span className="font-medium">+{sources.length - (previewCount - 1)} more</span>

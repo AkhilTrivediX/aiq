@@ -34,6 +34,7 @@ export function Citation({ n, sources }: CitationProps): ReactNode {
       href={src?.url}
       target={src?.url ? '_blank' : undefined}
       rel={src?.url ? 'noopener noreferrer' : undefined}
+      tabIndex={src?.url ? undefined : 0}
       className={MARK}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}

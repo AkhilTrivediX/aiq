@@ -3,7 +3,7 @@
 
 'use client'
 
-import { type ReactNode, useCallback, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { Button } from '@/adapters/ui'
 import { Check, Copy } from '@/adapters/ui/icons'
 
@@ -21,12 +21,21 @@ const RESET_MS = 1500
  */
 export function CopyButton({ text, label = 'Copy' }: CopyButtonProps): ReactNode {
   const [copied, setCopied] = useState(false)
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(
+    () => () => {
+      if (resetTimer.current != null) clearTimeout(resetTimer.current)
+    },
+    [],
+  )
 
   const handleCopy = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
-      setTimeout(() => setCopied(false), RESET_MS)
+      if (resetTimer.current != null) clearTimeout(resetTimer.current)
+      resetTimer.current = setTimeout(() => setCopied(false), RESET_MS)
     } catch {
       setCopied(false)
     }

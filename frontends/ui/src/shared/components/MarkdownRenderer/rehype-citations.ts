@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { visit } from 'unist-util-visit'
+import { SKIP, visit } from 'unist-util-visit'
 import type { Element, Root, Text } from 'hast'
 
 const CITATION_RE = /\[(\d{1,3})\]/g
@@ -16,6 +16,8 @@ export function rehypeCitations() {
   return (tree: Root): void => {
     visit(tree, 'text', (node: Text, index, parent) => {
       if (parent == null || index == null || !node.value.includes('[')) return undefined
+      const tag = (parent as Element).tagName
+      if (tag === 'code' || tag === 'pre') return SKIP
 
       const replacements: Array<Text | Element> = []
       let lastIndex = 0
