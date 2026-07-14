@@ -297,6 +297,25 @@ describe('AgentPrompt', () => {
     expect(screen.queryByText('Customer Churn Assessment')).not.toBeInTheDocument()
   })
 
+  test('does not treat a responded approval prompt with no response as approved', () => {
+    useChatStore.setState({ respondToInteractionFn: vi.fn() })
+
+    const content = [
+      'Research Plan Preview',
+      '',
+      '**Title:** Customer Churn Assessment',
+      '',
+      '**Sections:**',
+      '1. Data Sources and Definitions',
+      '',
+      'Reply **approve** to proceed, **reject** to cancel',
+    ].join('\n')
+
+    render(<AgentPrompt id="p" type="approval" content={content} isResponded />)
+
+    expect(screen.queryByText('Plan approved')).not.toBeInTheDocument()
+  })
+
   test('re-expands the collapsed block when the header toggle is clicked', async () => {
     const user = userEvent.setup()
     useChatStore.setState({ respondToInteractionFn: vi.fn() })

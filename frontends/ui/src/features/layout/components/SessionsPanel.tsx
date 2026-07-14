@@ -16,6 +16,7 @@ import {
   type FC,
   type KeyboardEvent,
   type ReactNode,
+  type Ref,
   memo,
   useCallback,
   useMemo,
@@ -88,8 +89,10 @@ const NavRow: FC<{
   disabled?: boolean
   ariaLabel?: string
   title?: string
-}> = ({ icon, label, collapsed, onClick, disabled = false, ariaLabel, title }) => (
+  buttonRef?: Ref<HTMLButtonElement>
+}> = ({ icon, label, collapsed, onClick, disabled = false, ariaLabel, title, buttonRef }) => (
   <button
+    ref={buttonRef}
     type="button"
     onClick={onClick}
     disabled={disabled}
@@ -148,6 +151,7 @@ export const SessionsPanel: FC<SessionsPanelProps> = memo(function SessionsPanel
   const [deleteAllModalOpen, setDeleteAllModalOpen] = useState(false)
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const searchTriggerRef = useRef<HTMLButtonElement>(null)
   const refreshStatusesInFlightRef = useRef(false)
 
   const [storagePercent, setStoragePercent] = useState<number>(0)
@@ -207,6 +211,7 @@ export const SessionsPanel: FC<SessionsPanelProps> = memo(function SessionsPanel
   const closeSearch = useCallback(() => {
     setSearchOpen(false)
     setSearchQuery('')
+    requestAnimationFrame(() => searchTriggerRef.current?.focus())
   }, [])
 
   const clearSearch = useCallback(() => {
@@ -329,6 +334,7 @@ export const SessionsPanel: FC<SessionsPanelProps> = memo(function SessionsPanel
               collapsed={collapsed}
               onClick={handleSearchClick}
               ariaLabel="Search sessions"
+              buttonRef={searchTriggerRef}
             />
           ))}
 

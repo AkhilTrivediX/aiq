@@ -72,6 +72,19 @@ describe('AgentsTab', () => {
       expect(screen.getByText('top customers by revenue')).toBeInTheDocument()
     })
 
+    test('counts orphan tool-call groups when there are no agents', () => {
+      useChatStore.setState({
+        deepResearchToolCalls: [
+          createToolCall({ id: 't1', name: 'database_query', input: { question: 'count of orders' } }),
+          createToolCall({ id: 't2', name: 'database_query', input: { question: 'top customers' } }),
+        ],
+      })
+
+      render(<AgentsTab />)
+
+      expect(screen.getByText('2')).toBeInTheDocument()
+    })
+
     test('renders a tool call with no owning agent', () => {
       useChatStore.setState({
         deepResearchToolCalls: [

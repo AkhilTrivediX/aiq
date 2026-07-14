@@ -33,6 +33,13 @@ vi.mock('./ExportFooter', () => ({
   ExportFooter: () => <div data-testid="export-footer">Export Footer</div>,
 }))
 
+vi.mock('./FileCard', () => ({
+  FileCard: ({ file }: { file: { name: string } }) => (
+    <div data-testid="file-card">{file.name}</div>
+  ),
+}))
+
+import userEvent from '@testing-library/user-event'
 import { useChatStore } from '@/features/chat'
 
 describe('ReportTab', () => {
@@ -106,5 +113,29 @@ describe('ReportTab', () => {
     render(<ReportTab />)
 
     expect(screen.getByTestId('export-footer')).toBeInTheDocument()
+  })
+
+  test('bounds the expanded generated-files list with a scroll area', async () => {
+    const user = userEvent.setup()
+    vi.mocked(useChatStore).mockImplementation((selector?: (s: any) => any) => {
+      const state = {
+        reportContent: 'Report body',
+        isStreaming: false,
+        currentStatus: null,
+        deepResearchFiles: [
+          { id: 'f1', name: 'a.md' },
+          { id: 'f2', name: 'b.md' },
+        ],
+      }
+      return selector ? selector(state) : state
+    })
+
+    render(<ReportTab />)
+
+    await user.click(screen.getByRole('button', { name: /generated files/i }))
+
+    const list = screen.getAllByTestId('file-card')[0].parentElement?.parentElement
+    expect(list?.className).toMatch(/overflow-y-auto/)
+    expect(list?.className).toMatch(/max-h-/)
   })
 })

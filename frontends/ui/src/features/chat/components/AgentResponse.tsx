@@ -147,13 +147,22 @@ export const AgentResponse: FC<AgentResponseProps> = ({
   }
 
   const reportButton = shouldShowButton && (
-    <Flex align="center" justify="end" className="mt-1">
+    <Flex direction="col" align="end" gap="1" className="mt-1">
+      {error && (
+        <Text
+          role="alert"
+          kind="label/regular/xs"
+          className="text-error max-w-full text-right"
+        >
+          Could not load the report: {error}
+        </Text>
+      )}
       <Button
         kind="tertiary"
         size="tiny"
         onClick={handleViewReport}
         disabled={isLoading}
-        aria-label={isLoading ? 'Loading...' : buttonText}
+        aria-label={isLoading ? 'Loading...' : error ? `Retry: ${buttonText}` : buttonText}
         title={error ? `Error: ${error}` : isLoading ? 'Loading...' : buttonText}
       >
         <Flex align="center" gap="1">
@@ -164,7 +173,7 @@ export const AgentResponse: FC<AgentResponseProps> = ({
             </>
           ) : (
             <>
-              <Text kind="label/regular/xs">{buttonText}</Text>
+              <Text kind="label/regular/xs">{error ? 'Retry' : buttonText}</Text>
               <ChevronRight className="h-3 w-3" aria-hidden="true" />
             </>
           )}

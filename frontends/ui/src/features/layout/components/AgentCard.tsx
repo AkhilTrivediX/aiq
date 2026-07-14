@@ -68,11 +68,12 @@ const agentNodeState = (status: AgentInfo['status']) => {
 const dedupeToolCalls = (toolCalls: DeepResearchToolCall[]): DeepResearchToolCall[] => {
   const seen = new Map<string, DeepResearchToolCall>()
   for (const tc of toolCalls) {
-    const key = `${tc.name}:${getToolArgSummary(tc.name, tc.input) ?? ''}`
+    const summary = getToolArgSummary(tc.name, tc.input) ?? ''
+    const key = summary ? `${tc.name}:${summary}` : `${tc.name}::${tc.id}`
     const existing = seen.get(key)
     if (!existing) {
       seen.set(key, tc)
-    } else if (tc.status === 'complete' && existing.status !== 'complete') {
+    } else if (tc.status !== 'running' && existing.status === 'running') {
       seen.set(key, tc)
     }
   }

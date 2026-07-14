@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-import { render, screen } from '@/test-utils'
+import { render, screen, waitFor } from '@/test-utils'
 import userEvent from '@testing-library/user-event'
 import { vi, describe, test, expect, beforeEach } from 'vitest'
 import { SessionsPanel } from './SessionsPanel'
@@ -195,6 +195,19 @@ describe('SessionsPanel', () => {
     render(<SessionsPanel sessions={mockSessions} />)
 
     expect(screen.getByText(/Chat sessions are saved in this browser/i)).toBeInTheDocument()
+  })
+
+  test('returns focus to the search trigger when search closes on Escape', async () => {
+    const user = userEvent.setup()
+    render(<SessionsPanel sessions={mockSessions} />)
+
+    await user.click(screen.getByRole('button', { name: /search sessions/i }))
+    const input = screen.getByRole('textbox', { name: /search sessions/i })
+    await user.type(input, '{Escape}')
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /search sessions/i })).toHaveFocus()
+    })
   })
 
   test('checks persisted deep research jobs when the sidebar is expanded', () => {

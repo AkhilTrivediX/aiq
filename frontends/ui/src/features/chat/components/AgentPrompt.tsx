@@ -190,7 +190,7 @@ export const AgentPrompt: FC<AgentPromptProps> = ({
         ? (choiceItems.find((choice) => choice.value === response)?.label ?? response)
         : response
 
-  const approved = isApprovalPrompt && !/reject/i.test(response ?? '')
+  const approved = isApprovalPrompt && (response ? !/reject/i.test(response) : false)
 
   const choiceItemsRef = useRef(choiceItems)
   choiceItemsRef.current = choiceItems

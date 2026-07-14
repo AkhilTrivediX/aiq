@@ -135,7 +135,7 @@ export const ReportTab: FC<ReportTabProps> = ({ children }) => {
             />
           </button>
           {showFiles && (
-            <Flex direction="col" gap="2">
+            <Flex direction="col" gap="2" className="max-h-64 overflow-y-auto">
               {deepResearchFiles.map((file) => (
                 <div key={file.id} className="shrink-0">
                   <FileCard file={file} />

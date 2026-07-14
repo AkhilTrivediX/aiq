@@ -46,14 +46,15 @@ vi.mock('@/adapters/auth', () => ({
 
 const mockImportJobStream = vi.fn()
 const mockLoadResearchPanelTab = vi.fn()
+const hookState = vi.hoisted(() => ({ error: null as string | null, isLoading: false }))
 
 vi.mock('../hooks', () => ({
   useLoadJobData: () => ({
     loadReport: vi.fn(),
     importJobStream: mockImportJobStream,
     loadResearchPanelTab: mockLoadResearchPanelTab,
-    isLoading: false,
-    error: null,
+    isLoading: hookState.isLoading,
+    error: hookState.error,
     clearError: vi.fn(),
   }),
 }))
@@ -74,6 +75,8 @@ describe('AgentResponse', () => {
     vi.clearAllMocks()
     mockImportJobStream.mockClear()
     mockLoadResearchPanelTab.mockClear()
+    hookState.error = null
+    hookState.isLoading = false
   })
 
   test('renders response content', () => {
@@ -155,6 +158,16 @@ describe('AgentResponse', () => {
 
     expect(mockLoadResearchPanelTab).toHaveBeenCalledWith('test-job-123', 'report')
     expect(mockImportJobStream).not.toHaveBeenCalled()
+  })
+
+  test('surfaces a report-load error as an inline alert and offers retry', () => {
+    hookState.error = 'network timeout'
+
+    render(<AgentResponse content="Response" showViewReport={true} jobId="job-1" />)
+
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent('network timeout')
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
   })
 
   test('strips a baked references block from the rendered body and lists sources', () => {

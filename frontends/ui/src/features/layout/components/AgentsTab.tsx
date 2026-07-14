@@ -45,6 +45,7 @@ export const AgentsTab: FC = () => {
 
   const isEmpty = deepResearchAgents.length === 0 && deepResearchToolCalls.length === 0
   const runningCount = deepResearchAgents.filter((a) => a.status === 'running').length
+  const renderedGroupCount = useMemo(() => steps.filter((s) => s.isTopLevel).length, [steps])
 
   const scrollRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -63,7 +64,7 @@ export const AgentsTab: FC = () => {
           </Text>
           {!isEmpty && (
             <Text kind="body/regular/xs" className="text-secondary">
-              {runningCount > 0 ? `${runningCount} running` : `${deepResearchAgents.length}`}
+              {runningCount > 0 ? `${runningCount} running` : `${renderedGroupCount}`}
             </Text>
           )}
         </Flex>

@@ -146,6 +146,40 @@ describe('AgentCard', () => {
     })
   })
 
+  describe('tool call dedup', () => {
+    test('keeps distinct calls with unrecognized inputs as separate rows', () => {
+      render(
+        <AgentCard
+          agent={createAgent({
+            toolCalls: [
+              createToolCall({ id: 'tc-1', name: 'web_search_tool', input: undefined }),
+              createToolCall({ id: 'tc-2', name: 'web_search_tool', input: undefined }),
+            ],
+          })}
+        />
+      )
+
+      expect(screen.getByText('2/2')).toBeInTheDocument()
+    })
+
+    test('a terminal error replaces a prior running row for the same call', () => {
+      const { container } = render(
+        <AgentCard
+          agent={createAgent({
+            toolCalls: [
+              createToolCall({ id: 'tc-1', status: 'running', input: { query: 'q1' } }),
+              createToolCall({ id: 'tc-1', status: 'error', input: { query: 'q1' } }),
+            ],
+          })}
+        />
+      )
+
+      expect(screen.getByText('0/1')).toBeInTheDocument()
+      expect(container.querySelector('.tool-call-row-dot .status-dot-error')).toBeTruthy()
+      expect(container.querySelector('.tool-call-row-dot .status-dot-running')).toBeNull()
+    })
+  })
+
   describe('accessibility', () => {
     test('button has aria-expanded attribute', async () => {
       const user = userEvent.setup()
