@@ -752,6 +752,7 @@ export const useChatStore = create<ChatStore>()(
           metadata?: {
             enabledDataSources?: string[]
             messageFiles?: Array<{ id: string; fileName: string }>
+            selectedModel?: string
           }
         ) => {
           const { currentConversation, conversations, currentUserId } = get()
@@ -777,6 +778,7 @@ export const useChatStore = create<ChatStore>()(
             messageType: 'user',
             enabledDataSources: metadata?.enabledDataSources,
             messageFiles: metadata?.messageFiles,
+            selectedModel: metadata?.selectedModel,
           }
           // Update title on first user message (ignore file_upload_status and other system messages)
           const hasUserMessage = conversation.messages.some((m) => m.messageType === 'user')
@@ -1281,7 +1283,14 @@ export const useChatStore = create<ChatStore>()(
 
           // Update ephemeral store
           const updatedThinkingSteps = thinkingSteps.map((step) =>
-            step.id === stepId ? { ...step, isComplete: true } : step
+            step.id === stepId
+              ? {
+                  ...step,
+                  isComplete: true,
+                  completedAt: step.completedAt ?? new Date(),
+                  status: step.status === 'error' ? step.status : ('success' as const),
+                }
+              : step
           )
 
           // Find the userMessageId for this step to update persisted message
@@ -1295,7 +1304,14 @@ export const useChatStore = create<ChatStore>()(
                 return {
                   ...msg,
                   thinkingSteps: msg.thinkingSteps.map((s) =>
-                    s.id === stepId ? { ...s, isComplete: true } : s
+                    s.id === stepId
+                      ? {
+                          ...s,
+                          isComplete: true,
+                          completedAt: s.completedAt ?? new Date(),
+                          status: s.status === 'error' ? s.status : ('success' as const),
+                        }
+                      : s
                   ),
                 }
               }
@@ -1320,6 +1336,65 @@ export const useChatStore = create<ChatStore>()(
             },
             false,
             'completeThinkingStep'
+          )
+        },
+
+        failThinkingStep: (stepId: string) => {
+          const { currentConversation, conversations, thinkingSteps, activeThinkingStepId } = get()
+
+          const updatedThinkingSteps = thinkingSteps.map((step) =>
+            step.id === stepId
+              ? {
+                  ...step,
+                  isComplete: true,
+                  completedAt: step.completedAt ?? new Date(),
+                  status: 'error' as const,
+                }
+              : step
+          )
+
+          const step = thinkingSteps.find((s) => s.id === stepId)
+          let updatedConversation = currentConversation
+          let updatedConversations = conversations
+
+          if (step && currentConversation) {
+            const updatedMessages = currentConversation.messages.map((msg) => {
+              if (msg.id === step.userMessageId && msg.thinkingSteps) {
+                return {
+                  ...msg,
+                  thinkingSteps: msg.thinkingSteps.map((s) =>
+                    s.id === stepId
+                      ? {
+                          ...s,
+                          isComplete: true,
+                          completedAt: s.completedAt ?? new Date(),
+                          status: 'error' as const,
+                        }
+                      : s
+                  ),
+                }
+              }
+              return msg
+            })
+
+            updatedConversation = {
+              ...currentConversation,
+              messages: updatedMessages,
+              updatedAt: new Date(),
+            }
+
+            updatedConversations = updateConversationInList(conversations, updatedConversation)
+          }
+
+          set(
+            {
+              thinkingSteps: updatedThinkingSteps,
+              activeThinkingStepId: activeThinkingStepId === stepId ? null : activeThinkingStepId,
+              currentConversation: updatedConversation,
+              conversations: updatedConversations,
+            },
+            false,
+            'failThinkingStep'
           )
         },
 
@@ -2326,6 +2401,43 @@ export const useChatStore = create<ChatStore>()(
 
         setStreamLoaded: (loaded: boolean) => {
           set({ deepResearchStreamLoaded: loaded }, false, 'setStreamLoaded')
+        },
+
+        hydrateDeepResearchFromMessage: (jobId: string): boolean => {
+          const { currentConversation, conversations } = get()
+          const findInConversation = (conv?: Conversation | null): ChatMessage | undefined =>
+            conv?.messages.find(
+              (m) =>
+                m.deepResearchJobId === jobId &&
+                ((m.deepResearchToolCalls?.length ?? 0) > 0 ||
+                  (m.deepResearchAgents?.length ?? 0) > 0)
+            )
+
+          const message =
+            findInConversation(currentConversation) ??
+            conversations.map(findInConversation).find(Boolean)
+
+          if (!message) return false
+
+          set(
+            {
+              deepResearchJobId: jobId,
+              deepResearchToolCalls: message.deepResearchToolCalls
+                ? [...message.deepResearchToolCalls]
+                : [],
+              deepResearchAgents: message.deepResearchAgents ? [...message.deepResearchAgents] : [],
+              deepResearchLLMSteps: message.deepResearchLLMSteps
+                ? [...message.deepResearchLLMSteps]
+                : [],
+              deepResearchFiles: message.deepResearchFiles ? [...message.deepResearchFiles] : [],
+              deepResearchCitations: message.citations ? [...message.citations] : [],
+              deepResearchTodos: message.deepResearchTodos ? [...message.deepResearchTodos] : [],
+              deepResearchStreamLoaded: true,
+            },
+            false,
+            'hydrateDeepResearchFromMessage'
+          )
+          return true
         },
 
         setDeepResearchLastEventId: (eventId: string | null) => {

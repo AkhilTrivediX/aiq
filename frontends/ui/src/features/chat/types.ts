@@ -61,7 +61,7 @@ export type ErrorCode =
   | 'system.unknown'
 
 /** Prompt types for agent prompts requiring user response */
-export type PromptType = 'clarification' | 'approval' | 'choice' | 'text-input'
+export type PromptType = 'clarification' | 'approval' | 'choice' | 'text-input' | 'plan_approval'
 
 /** File card data for file messages */
 export interface FileCardData {
@@ -182,6 +182,8 @@ export interface ChatMessage {
   enabledDataSources?: string[]
   /** Files that were available when this message was sent (for display in thinking panel) */
   messageFiles?: Array<{ id: string; fileName: string }>
+  /** Final-response model selected for this specific turn. */
+  selectedModel?: string
 }
 
 /** Intermediate thinking step from agent */
@@ -214,8 +216,14 @@ export interface ThinkingStep {
   rawPayload?: string
   /** When this step started */
   timestamp: Date
+  /** When this step completed (Function Complete received) */
+  completedAt?: Date
   /** Whether this step is complete (Function Complete received) */
   isComplete: boolean
+  /** Lifecycle status derived from the NAT step status (drives trace colors) */
+  status?: 'running' | 'success' | 'error'
+  /** Short human summary of the step's tool input (for the trace secondary line) */
+  argSummary?: string
   /** Whether this step is from deep research (for Research Panel routing) */
   isDeepResearch?: boolean
   /** True when backend name is "Function Start: ..." (top-level workflow step); false for model/tool sub-calls (indented) */
@@ -459,6 +467,7 @@ export interface ChatActions {
     metadata?: {
       enabledDataSources?: string[]
       messageFiles?: Array<{ id: string; fileName: string }>
+      selectedModel?: string
     }
   ) => ChatMessage
   /** Start streaming an assistant response */
@@ -490,6 +499,8 @@ export interface ChatActions {
   appendToThinkingStep: (stepId: string, content: string) => void
   /** Mark a thinking step as complete */
   completeThinkingStep: (stepId: string) => void
+  /** Mark a thinking step as failed (status: 'error') */
+  failThinkingStep: (stepId: string) => void
   /** Update or complete a thinking step by function name (for "Function Complete" messages) */
   updateThinkingStepByFunctionName: (
     functionName: string,
@@ -628,6 +639,8 @@ export interface ChatActions {
   setLoadedJobId: (jobId: string) => void
   /** Mark that full stream data has been loaded for current job */
   setStreamLoaded: (loaded: boolean) => void
+  /** Rehydrate live deep-research state from a persisted message's saved agents/tool calls */
+  hydrateDeepResearchFromMessage: (jobId: string) => boolean
 
   // Deep research ThinkingTab actions (LLM steps, agents, tool calls, files)
 

@@ -583,6 +583,26 @@ describe('useChatStore', () => {
       expect(useChatStore.getState().currentConversation?.messages).toHaveLength(1)
     })
 
+    test('captures selectedModel from metadata onto the message', () => {
+      const conv: Conversation = {
+        id: 'conv-1',
+        userId: 'user-1',
+        title: '',
+        messages: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      useChatStore.setState({
+        currentUserId: 'user-1',
+        currentConversation: conv,
+        conversations: [conv],
+      })
+
+      const msg = useChatStore.getState().addUserMessage('Hello', { selectedModel: 'gpt-5.4' })
+
+      expect(msg.selectedModel).toBe('gpt-5.4')
+    })
+
     test('updates title on first message', () => {
       const conv: Conversation = {
         id: 'conv-1',
@@ -1254,6 +1274,83 @@ describe('useChatStore', () => {
 
       expect(useChatStore.getState().thinkingSteps[0].isComplete).toBe(true)
       expect(useChatStore.getState().activeThinkingStepId).toBeNull()
+    })
+
+    test('completeThinkingStep sets status success and completedAt', () => {
+      setupUserMessageContext()
+
+      const stepId = useChatStore.getState().addThinkingStep({
+        category: 'tools',
+        functionName: 'web_search_tool',
+        displayName: 'Searching the web',
+        content: '',
+        isComplete: false,
+        status: 'running',
+      })
+
+      useChatStore.getState().completeThinkingStep(stepId)
+
+      const step = useChatStore.getState().thinkingSteps[0]
+      expect(step.status).toBe('success')
+      expect(step.completedAt).toBeInstanceOf(Date)
+    })
+
+    test('completeThinkingStep preserves an existing error status', () => {
+      setupUserMessageContext()
+
+      const stepId = useChatStore.getState().addThinkingStep({
+        category: 'tools',
+        functionName: 'web_search_tool',
+        displayName: 'Searching the web',
+        content: '',
+        isComplete: false,
+        status: 'error',
+      })
+
+      useChatStore.getState().completeThinkingStep(stepId)
+
+      expect(useChatStore.getState().thinkingSteps[0].status).toBe('error')
+    })
+
+    test('failThinkingStep marks step failed with error status and completedAt', () => {
+      setupUserMessageContext()
+
+      const stepId = useChatStore.getState().addThinkingStep({
+        category: 'tools',
+        functionName: 'web_search_tool',
+        displayName: 'Searching the web',
+        content: '',
+        isComplete: false,
+        status: 'running',
+      })
+
+      useChatStore.getState().failThinkingStep(stepId)
+
+      const step = useChatStore.getState().thinkingSteps[0]
+      expect(step.isComplete).toBe(true)
+      expect(step.status).toBe('error')
+      expect(step.completedAt).toBeInstanceOf(Date)
+      expect(useChatStore.getState().activeThinkingStepId).toBeNull()
+    })
+
+    test('failThinkingStep persists error status to the owning message', () => {
+      const userMessageId = setupUserMessageContext()
+
+      const stepId = useChatStore.getState().addThinkingStep({
+        category: 'tools',
+        functionName: 'web_search_tool',
+        displayName: 'Searching the web',
+        content: '',
+        isComplete: false,
+        status: 'running',
+      })
+
+      useChatStore.getState().failThinkingStep(stepId)
+
+      const message = useChatStore
+        .getState()
+        .currentConversation?.messages.find((m) => m.id === userMessageId)
+      expect(message?.thinkingSteps?.[0].status).toBe('error')
     })
 
     test('clearThinkingSteps clears all steps', () => {
@@ -2183,6 +2280,69 @@ describe('useChatStore', () => {
       expect(trackingMessage?.isDeepResearchActive).toBe(false)
       expect(updatedMessages.some((m) => m.id === 'starting-banner')).toBe(false)
       expect(failureBanner).toBeTruthy()
+    })
+  })
+
+  describe('hydrateDeepResearchFromMessage', () => {
+    test('rehydrates live state from a message with saved agents/tool calls', () => {
+      const conv: Conversation = {
+        id: 'conv-1',
+        userId: 'user-1',
+        title: '',
+        messages: [
+          {
+            id: 'm1',
+            role: 'assistant',
+            content: '',
+            timestamp: new Date(),
+            deepResearchJobId: 'job-1',
+            deepResearchAgents: [
+              {
+                id: 'a1',
+                name: 'researcher',
+                status: 'complete',
+                startedAt: new Date(),
+              },
+            ],
+            deepResearchToolCalls: [
+              {
+                id: 't1',
+                name: 'web_search_tool',
+                status: 'complete',
+                timestamp: new Date(),
+              },
+            ],
+            citations: [{ id: 'c1', url: 'https://example.com', content: 'x', timestamp: new Date() }],
+          },
+        ],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      useChatStore.setState({ currentConversation: conv, conversations: [conv] })
+
+      const ok = useChatStore.getState().hydrateDeepResearchFromMessage('job-1')
+
+      expect(ok).toBe(true)
+      const state = useChatStore.getState()
+      expect(state.deepResearchJobId).toBe('job-1')
+      expect(state.deepResearchAgents).toHaveLength(1)
+      expect(state.deepResearchToolCalls).toHaveLength(1)
+      expect(state.deepResearchCitations).toHaveLength(1)
+      expect(state.deepResearchStreamLoaded).toBe(true)
+    })
+
+    test('returns false when no message carries saved state for the job', () => {
+      const conv: Conversation = {
+        id: 'conv-1',
+        userId: 'user-1',
+        title: '',
+        messages: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }
+      useChatStore.setState({ currentConversation: conv, conversations: [conv] })
+
+      expect(useChatStore.getState().hydrateDeepResearchFromMessage('missing')).toBe(false)
     })
   })
 })
