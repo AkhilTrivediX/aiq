@@ -230,10 +230,11 @@ describe('DataSourcesPanel', () => {
       return selector ? selector(state) : state
     })
 
-    render(<DataSourcesPanel />)
+    const { container } = render(<DataSourcesPanel />)
 
-    // SidePanel handles visibility, so content should not be visible
-    expect(screen.queryByText('Individual Connections (3)')).not.toBeInTheDocument()
+    // Push panel keeps content mounted but collapses to zero width and marks
+    // itself aria-hidden when closed.
+    expect(container.querySelector('[aria-hidden="true"]')).toBeInTheDocument()
   })
 
   test('renders all sources toggle', () => {

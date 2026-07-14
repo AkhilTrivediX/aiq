@@ -24,17 +24,15 @@ import { TaskCard } from './TaskCard'
  * Uses deepResearchTodos from the store (populated by SSE artifact.update events).
  */
 export const TasksTab: FC = () => {
-  const { deepResearchTodos, deepResearchJobId, currentStatus, isDeepResearchStreaming } =
+  const { deepResearchTodos, currentStatus, isDeepResearchStreaming } =
     useChatStore(useShallow((s) => ({
       deepResearchTodos: s.deepResearchTodos,
-      deepResearchJobId: s.deepResearchJobId,
       currentStatus: s.currentStatus,
       isDeepResearchStreaming: s.isDeepResearchStreaming,
     })))
 
   const isEmpty = deepResearchTodos.length === 0
 
-  // Calculate progress stats
   const completedCount = deepResearchTodos.filter((t) => t.status === 'completed').length
   const totalCount = deepResearchTodos.length
   const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
@@ -42,29 +40,24 @@ export const TasksTab: FC = () => {
 
   return (
     <Flex direction="col" gap="4" className="h-full min-h-0">
-      {/* Header with progress indicator */}
+      {}
       <Flex direction="col" gap="1" className="shrink-0">
         <Flex align="center" gap="2">
-          <Text kind="label/semibold/md" className="text-subtle">
+          <Text kind="label/semibold/md" className="text-primary">
             Tasks
           </Text>
-          {deepResearchJobId && (
-            <Text kind="body/regular/xs" className="text-tertiary">
-              JobID: {deepResearchJobId}
-            </Text>
-          )}
           {totalCount > 0 && (
-            <Text kind="body/regular/xs" className="text-subtle">
+            <Text kind="body/regular/xs" className="text-secondary tabular-nums">
               {completedCount}/{totalCount}
             </Text>
           )}
         </Flex>
-        <Text kind="body/regular/xs" className="text-subtle">
+        <Text kind="body/regular/sm" className="text-secondary">
           Research plan breakdown and progress during deep research.
         </Text>
       </Flex>
 
-      {/* Content */}
+      {}
       {isEmpty ? (
         <Flex
           direction="col"
@@ -72,22 +65,22 @@ export const TasksTab: FC = () => {
           justify="center"
           className="flex-1 text-center py-8"
         >
-          <CheckCircle className="text-subtle mb-3 h-8 w-8" />
-          <Text kind="body/regular/md" className="text-subtle">
+          <CheckCircle className="text-secondary mb-3 h-8 w-8" />
+          <Text kind="body/regular/md" className="text-secondary">
             Research tasks will appear here.
           </Text>
-          <Text kind="body/regular/sm" className="text-subtle mt-2">
+          <Text kind="body/regular/sm" className="text-secondary mt-2">
             Shows the plan breakdown and progress during deep research.
           </Text>
         </Flex>
       ) : (
         <Flex direction="col" gap="3" className="flex-1 min-h-0 overflow-y-auto">
-          {/* Progress bar showing completion percentage */}
+          {}
           <div className="shrink-0">
             <ProgressBar value={progressPercent} aria-label="Task completion progress" />
           </div>
 
-          {/* Writing report indicator */}
+          {}
           {isWritingReport && (
             <Flex align="center" gap="2" className="shrink-0 rounded-md bg-blue-50 px-3 py-2 dark:bg-blue-950">
               <div className="h-2 w-2 animate-pulse rounded-full bg-blue-500" />
@@ -97,7 +90,7 @@ export const TasksTab: FC = () => {
             </Flex>
           )}
 
-          {/* Task list */}
+          {}
           <Flex direction="col" gap="2">
             {deepResearchTodos.map((todo) => (
               <div key={todo.id} className="shrink-0">

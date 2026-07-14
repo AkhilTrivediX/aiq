@@ -197,9 +197,9 @@ describe('useLayoutStore', () => {
     test('selectedModel defaults to undefined and is settable', () => {
       expect(useLayoutStore.getState().selectedModel).toBeUndefined()
 
-      useLayoutStore.getState().setSelectedModel('gpt-5.4')
+      useLayoutStore.getState().setSelectedModel('custom-model')
 
-      expect(useLayoutStore.getState().selectedModel).toBe('gpt-5.4')
+      expect(useLayoutStore.getState().selectedModel).toBe('custom-model')
     })
   })
 

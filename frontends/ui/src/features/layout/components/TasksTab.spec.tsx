@@ -5,7 +5,6 @@ import { render, screen } from '@/test-utils'
 import { vi, describe, test, expect, beforeEach } from 'vitest'
 import { TasksTab } from './TasksTab'
 
-// Mock the chat store
 let mockDeepResearchTodos: Array<{
   id: string
   content: string
@@ -18,7 +17,6 @@ vi.mock('@/features/chat', () => ({
   }),
 }))
 
-// Mock TaskCard
 vi.mock('./TaskCard', () => ({
   TaskCard: ({ todo }: { todo: { id: string; content: string } }) => (
     <div data-testid="task-card">{todo.content}</div>
@@ -114,7 +112,6 @@ describe('TasksTab', () => {
 
       render(<TasksTab />)
 
-      // Progress bar should show 0%
       const progressBar = screen.getByLabelText('Task completion progress')
       expect(progressBar).toBeInTheDocument()
     })

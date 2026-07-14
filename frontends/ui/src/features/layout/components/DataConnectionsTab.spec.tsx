@@ -6,7 +6,6 @@ import userEvent from '@testing-library/user-event'
 import { vi, describe, test, expect, beforeEach } from 'vitest'
 import { DataConnectionsTab } from './DataConnectionsTab'
 
-// Mock the layout store
 const mockFetchDataSources = vi.fn()
 
 vi.mock('../store', () => ({
@@ -25,7 +24,6 @@ vi.mock('../store', () => ({
   }),
 }))
 
-// Mock DataConnectionCard
 vi.mock('./DataConnectionCard', () => ({
   DataConnectionCard: ({
     source,
@@ -59,7 +57,6 @@ describe('DataConnectionsTab', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    // Reset to default state with data sources
     vi.mocked(useLayoutStore).mockImplementation((selector?: (s: any) => any) => {
       const state = {
         availableDataSources: [

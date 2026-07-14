@@ -14,13 +14,17 @@
 
 'use client'
 
-import { type FC, type ReactNode } from 'react'
+import { type FC, type ReactNode, useMemo, useState } from 'react'
 import { Flex, Text } from '@/adapters/ui'
 import { useShallow } from 'zustand/react/shallow'
-import { Document } from '@/adapters/ui/icons'
+import { Document, ChevronDown } from '@/adapters/ui/icons'
 import { MarkdownRenderer } from '@/shared/components/MarkdownRenderer'
+import { SourceStrip } from '@/shared/components/Sources/SourceStrip'
+import { mapCitationSource } from '@/shared/components/Sources/source-utils'
+import { stripTrailingReferences } from '@/shared/components/Sources/parse-references'
 import { useChatStore, selectResolvedDeepResearchJobId } from '@/features/chat'
 import { ExportFooter } from './ExportFooter'
+import { FileCard } from './FileCard'
 
 interface ReportTabProps {
   /** Optional custom content to display instead of store content */
@@ -33,17 +37,28 @@ interface ReportTabProps {
  * Renders research notes with a subtle preview treatment and the final report at full prominence.
  */
 export const ReportTab: FC<ReportTabProps> = ({ children }) => {
-  const { reportContent, reportContentCategory, isStreaming, currentStatus } =
+  const { reportContent, reportContentCategory, isStreaming, currentStatus, deepResearchCitations, deepResearchFiles } =
     useChatStore(useShallow((s) => ({
       reportContent: s.reportContent,
       reportContentCategory: s.reportContentCategory,
       isStreaming: s.isStreaming,
       currentStatus: s.currentStatus,
+      deepResearchCitations: s.deepResearchCitations,
+      deepResearchFiles: s.deepResearchFiles,
     })))
   // Resolve the owning job id (active or latest finished) so artifact:// images render.
   const deepResearchJobId = useChatStore(selectResolvedDeepResearchJobId)
 
+  const [showFiles, setShowFiles] = useState(false)
+
+  const sources = useMemo(() => {
+    const all = deepResearchCitations ?? []
+    const cited = all.filter((c) => c.isCited)
+    return (cited.length > 0 ? cited : all).map(mapCitationSource)
+  }, [deepResearchCitations])
+
   const reportContentStr = typeof reportContent === 'string' ? reportContent : ''
+  const reportBody = useMemo(() => stripTrailingReferences(reportContentStr), [reportContentStr])
   const isEmpty = !reportContentStr.trim()
   const isGeneratingReport = isStreaming && currentStatus === 'writing'
   const isResearchNotes = reportContentCategory === 'research_notes'
@@ -85,16 +100,51 @@ export const ReportTab: FC<ReportTabProps> = ({ children }) => {
           </Flex>
         ) : (
           /* Final report: full prominence */
-          <div className="flex-1">
+          <Flex direction="col" gap="4" className="flex-1">
             <MarkdownRenderer
-              content={reportContentStr}
+              content={reportBody}
               isStreaming={isGeneratingReport}
               className="max-w-none"
+              variant="answer"
+              sources={sources}
               artifactJobId={deepResearchJobId ?? undefined}
             />
-          </div>
+            {sources.length > 0 && (
+              <div className="border-base border-t pt-4">
+                <SourceStrip sources={sources} />
+              </div>
+            )}
+          </Flex>
         )}
       </Flex>
+
+      {/* Generated files */}
+      {!children && (deepResearchFiles?.length ?? 0) > 0 && (
+        <Flex direction="col" gap="2" className="border-base shrink-0 border-t pt-3">
+          <button
+            type="button"
+            onClick={() => setShowFiles((v) => !v)}
+            aria-expanded={showFiles}
+            className="text-secondary hover:text-primary flex items-center gap-1.5 self-start transition-colors"
+          >
+            <Document className="h-4 w-4" aria-hidden="true" />
+            <Text kind="body/regular/sm">Generated files ({deepResearchFiles.length})</Text>
+            <ChevronDown
+              className={`h-4 w-4 transition-transform duration-200 ${showFiles ? 'rotate-180' : ''}`}
+              aria-hidden="true"
+            />
+          </button>
+          {showFiles && (
+            <Flex direction="col" gap="2">
+              {deepResearchFiles.map((file) => (
+                <div key={file.id} className="shrink-0">
+                  <FileCard file={file} />
+                </div>
+              ))}
+            </Flex>
+          )}
+        </Flex>
+      )}
 
       {/* Export footer - only meaningful for the final report */}
       <ExportFooter />

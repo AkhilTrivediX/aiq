@@ -6,7 +6,6 @@ import userEvent from '@testing-library/user-event'
 import { vi, describe, test, expect, beforeEach } from 'vitest'
 import { AgentResponse } from './AgentResponse'
 
-// Mock the layout store
 const mockOpenRightPanel = vi.fn()
 const mockSetResearchPanelTab = vi.fn()
 
@@ -20,7 +19,6 @@ vi.mock('@/features/layout/store', () => ({
   }),
 }))
 
-// Mock the chat store
 vi.mock('../store', () => ({
   useChatStore: vi.fn((selector?: (s: any) => any) => {
     const state = {
@@ -36,19 +34,16 @@ vi.mock('../store', () => ({
   }),
 }))
 
-// Mock cancelJob API
 vi.mock('@/adapters/api', () => ({
   cancelJob: vi.fn(),
 }))
 
-// Mock useAuth
 vi.mock('@/adapters/auth', () => ({
   useAuth: () => ({
     accessToken: null,
   }),
 }))
 
-// Mock the useLoadJobData hook
 const mockImportJobStream = vi.fn()
 const mockLoadResearchPanelTab = vi.fn()
 
@@ -63,9 +58,15 @@ vi.mock('../hooks', () => ({
   }),
 }))
 
-// Mock MarkdownRenderer to render content as plain text for testing
 vi.mock('@/shared/components/MarkdownRenderer', () => ({
-  MarkdownRenderer: ({ content }: { content: string }) => <span>{content}</span>,
+  MarkdownRenderer: ({ content, className }: { content: string; className?: string }) => (
+    <span
+      data-testid="markdown-body"
+      className={['markdown-content', className].filter(Boolean).join(' ')}
+    >
+      {content}
+    </span>
+  ),
 }))
 
 describe('AgentResponse', () => {
@@ -84,15 +85,13 @@ describe('AgentResponse', () => {
   test('returns null for empty content', () => {
     render(<AgentResponse content="" />)
 
-    // Component returns null for empty content - check that no markdown is rendered
-    expect(screen.queryByTestId('markdown')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('markdown-body')).not.toBeInTheDocument()
   })
 
   test('returns null for whitespace-only content', () => {
     render(<AgentResponse content="   " />)
 
-    // Component returns null for whitespace-only content
-    expect(screen.queryByTestId('markdown')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('markdown-body')).not.toBeInTheDocument()
   })
 
   test('displays timestamp when provided', () => {
@@ -136,7 +135,6 @@ describe('AgentResponse', () => {
     render(<AgentResponse content="Response without timestamp" />)
 
     expect(screen.getByText('Response without timestamp')).toBeInTheDocument()
-    // No timestamp text should be present
     expect(screen.queryByText(/\d{1,2}:\d{2}/)).not.toBeInTheDocument()
   })
 
@@ -145,7 +143,6 @@ describe('AgentResponse', () => {
 
     const { container } = render(<AgentResponse content={longContent} />)
 
-    // Verify content is rendered (container should have content)
     expect(container.textContent).toContain('This is a very long response.')
   })
 
@@ -158,5 +155,48 @@ describe('AgentResponse', () => {
 
     expect(mockLoadResearchPanelTab).toHaveBeenCalledWith('test-job-123', 'report')
     expect(mockImportJobStream).not.toHaveBeenCalled()
+  })
+
+  test('strips a baked references block from the rendered body and lists sources', () => {
+    const content =
+      'NVIDIA shipped record volume [1].\n\n**References:**\n- [1] NVIDIA Q4 results - https://www.nvidia.com/news'
+
+    render(<AgentResponse content={content} />)
+
+    const body = screen.getByTestId('markdown-body')
+    expect(body).toHaveTextContent('NVIDIA shipped record volume [1].')
+    expect(body).not.toHaveTextContent('References:')
+    expect(screen.getByRole('region', { name: 'Sources' })).toBeInTheDocument()
+    expect(screen.getByText('nvidia.com')).toBeInTheDocument()
+  })
+
+  test('renders no Sources list when there is no references block', () => {
+    render(<AgentResponse content="Just a plain answer." />)
+
+    expect(screen.queryByRole('region', { name: 'Sources' })).not.toBeInTheDocument()
+  })
+
+  test('Copy action copies the original full content including references', async () => {
+    const user = userEvent.setup()
+    const content =
+      'Answer body [1].\n\n**References:**\n- [1] NVIDIA Q4 results - https://www.nvidia.com/news'
+
+    render(<AgentResponse content={content} />)
+
+    await user.click(screen.getByRole('button', { name: 'Copy answer' }))
+
+    expect(await navigator.clipboard.readText()).toBe(content)
+  })
+})
+
+describe('AgentResponse answer reveal animation', () => {
+  test('answer markdown wrapper opts into the staggered reveal (default variant)', () => {
+    const { container } = render(<AgentResponse content="Here is your answer" />)
+    expect(container.querySelector('.markdown-content.answer-reveal')).toBeTruthy()
+  })
+
+  test('answer markdown wrapper opts into the staggered reveal (inline variant)', () => {
+    const { container } = render(<AgentResponse content="Here is your answer" variant="inline" />)
+    expect(container.querySelector('.markdown-content.answer-reveal')).toBeTruthy()
   })
 })
