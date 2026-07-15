@@ -84,10 +84,11 @@ RUN uv pip install --no-deps -e . \
     && uv pip install --no-deps -e ./sources/tavily_web_search \
     && uv pip install --no-deps -e ./sources/exa_web_search \
     && uv pip install --no-deps -e "./sources/knowledge_layer[all]" \
+    && uv pip install --no-deps -e ./sources/semantic_ontology \
     && uv pip install --no-deps -e ./frontends/aiq_api \
     && uv pip install "psycopg[binary]>=3.0.0"
 
-RUN /app/.venv/bin/python -c "import aiq_api; import knowledge_layer; print('✓ Base packages installed')"
+RUN /app/.venv/bin/python -c "import aiq_api; import knowledge_layer; import semantic_ontology_query; print('✓ Base packages installed')"
 
 RUN chmod +x /app/deploy/start_web.py \
     && mkdir -p /app/data \

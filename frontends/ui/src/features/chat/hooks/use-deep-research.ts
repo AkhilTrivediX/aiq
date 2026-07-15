@@ -458,6 +458,15 @@ export const useDeepResearch = (): UseDeepResearchReturn => {
             activeStepIdsRef.current.set(`toolCall:${name}`, toolCallId)
           },
 
+          onToolStatus: (name, status) => {
+            if (name === 'task' || !status) return
+            if (buf.active) return
+            if (!isActiveJob()) return
+            resetTimeout()
+            const stepId = activeStepIdsRef.current.get(`tool:${name}`)
+            if (stepId) appendToThinkingStep(stepId, `\n• ${status}`)
+          },
+
           onToolEnd: (name, output) => {
             if (name === 'task') return
             if (buf.active) {

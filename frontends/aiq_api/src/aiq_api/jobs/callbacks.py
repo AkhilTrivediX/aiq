@@ -682,6 +682,31 @@ class AgentEventCallback(BaseCallbackHandler):
 
         self._run_id_to_parent.pop(run_id, None)
 
+    def on_custom_event(self, name: str, data: object, *, run_id=None, tags=None, metadata=None, **kwargs) -> None:
+        """Emit a tool.update SSE event for tool-dispatched status labels.
+
+        Tools can stream mid-run progress by calling ``adispatch_custom_event``
+        with a dict carrying ``tool`` (tool name) and ``label`` (status text).
+        This bridges those events to the SSE stream as ``tool.update`` events
+        so the UI can render live status under the running tool's thinking step.
+        """
+        if not isinstance(data, dict):
+            return
+        label = data.get("label")
+        tool_name = data.get("tool")
+        if not label or not tool_name:
+            return
+        event_metadata = self._build_metadata_for_run(str(run_id)) if run_id is not None else None
+        self._emit(
+            IntermediateStepEvent(
+                category=EventCategory.TOOL,
+                state=EventState.UPDATE,
+                name=tool_name,
+                data=EventData(chunk=label),
+                metadata=event_metadata,
+            )
+        )
+
     def on_llm_start(self, serialized: dict, prompts: list, **kwargs) -> None:
         """Emit an llm.start event for a completion-style model call."""
         model_name = "unknown"

@@ -33,6 +33,7 @@ export type DeepResearchEventType =
   | 'llm.chunk'
   | 'llm.end'
   | 'tool.start'
+  | 'tool.update'
   | 'tool.end'
   | 'artifact.update'
 
@@ -231,6 +232,8 @@ export interface DeepResearchCallbacks {
   ) => void
   /** Called on tool events */
   onToolStart?: (name: string, input?: Record<string, unknown>, workflow?: string, eventId?: string, agentId?: string, isSandbox?: boolean) => void
+  /** Called on a tool.update event — a mid-run status label streamed by a tool (e.g. Semantic Ontology plan steps). */
+  onToolStatus?: (name: string, status: string, workflow?: string, agentId?: string) => void
   onToolEnd?: (name: string, output?: string, eventId?: string, agentId?: string, isSandbox?: boolean) => void
   /** Called on artifact updates */
   onTodoUpdate?: (todos: TodoItem[], workflow?: string) => void
@@ -503,6 +506,21 @@ export const createDeepResearchClient = (options: DeepResearchStreamOptions): De
         break
       }
 
+      case 'tool.update': {
+        // Mid-run status label streamed by a tool (category=tool, state=update).
+        // Status text is carried in data.chunk: { id, name, timestamp, data: { chunk }, metadata: { workflow, agent_id } }
+        const toolData = rawData as {
+          name?: string
+          data?: { chunk?: string }
+          metadata?: { workflow?: string; agent_id?: string }
+        }
+        const status = toolData.data?.chunk
+        if (status) {
+          callbacks.onToolStatus?.(toolData.name || '', status, toolData.metadata?.workflow, toolData.metadata?.agent_id)
+        }
+        break
+      }
+
       case 'tool.end': {
         const toolData = rawData as { id?: string; name: string; data?: { output?: string }; metadata?: { agent_id?: string; sandbox?: boolean } }
         callbacks.onToolEnd?.(toolData.name, toolData.data?.output, toolData.id, toolData.metadata?.agent_id, Boolean(toolData.metadata?.sandbox))
@@ -610,6 +628,7 @@ export const createDeepResearchClient = (options: DeepResearchStreamOptions): De
       'llm.chunk',
       'llm.end',
       'tool.start',
+      'tool.update',
       'tool.end',
       'artifact.update',
     ]

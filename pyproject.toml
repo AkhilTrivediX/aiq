@@ -210,6 +210,7 @@ dev = [
     "duckduckgo-news-search",
     "polymarket-prediction-market",
     "knowledge-layer[all]",
+    "semantic-ontology-query",
     "aiq-api",
     "aiq-research-cli",
     "aiq-debug",
@@ -253,6 +254,7 @@ exa-web-search = { workspace = true }
 duckduckgo-news-search = { workspace = true }
 polymarket-prediction-market = { workspace = true }
 knowledge-layer = { workspace = true }
+semantic-ontology-query = { workspace = true }
 aiq-api = { workspace = true }
 aiq-research-cli = { workspace = true }
 aiq-debug = { workspace = true }
