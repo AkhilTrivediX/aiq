@@ -248,9 +248,10 @@ def test_lease_refresher_thread_bumps_updated_at():
     assert _find_stale_jobs(db, RUNNING) == ["run"]  # stale before any refresh
 
     stop = threading.Event()
-    # Patch the interval to 0 so the refresher touches the lease right away.
+    # Small positive interval so the refresher touches the lease promptly
+    # without a zero-interval busy loop hammering the DB until teardown.
     original = runner.LEASE_REFRESH_INTERVAL_SECONDS
-    runner.LEASE_REFRESH_INTERVAL_SECONDS = 0
+    runner.LEASE_REFRESH_INTERVAL_SECONDS = 0.01
     t = threading.Thread(target=runner._run_lease_refresher, args=(db, "run", stop), daemon=True)
     try:
         t.start()
@@ -274,3 +275,24 @@ def test_db_now_expr_handles_both_postgres_schemes():
     assert _db_now_expr("postgresql://u@h/db") == "NOW()"
     assert _db_now_expr("postgres://u@h/db") == "NOW()"
     assert _db_now_expr("sqlite:///x.db") == "CURRENT_TIMESTAMP"
+
+
+def test_success_cas_writes_only_when_running():
+    """The worker's success write is a compare-and-set: it writes for a running
+    job but not for one the reaper already moved to a terminal state."""
+    from aiq_api.jobs.runner import _write_job_success_if_running_sync
+
+    db = _make_db()
+    _insert_job(db, "run", status=RUNNING, updated_ago_seconds=RECENT)
+    assert _write_job_success_if_running_sync(db, "run", '{"report": "ok"}') is True
+    assert _get_status(db, "run") == SUCCESS
+
+
+def test_success_cas_does_not_resurrect_reaped_job():
+    """A job already reaped to FAILURE is not resurrected by a late success write."""
+    from aiq_api.jobs.runner import _write_job_success_if_running_sync
+
+    db = _make_db()
+    _insert_job(db, "reaped", status=FAILURE, updated_ago_seconds=RECENT)
+    assert _write_job_success_if_running_sync(db, "reaped", '{"report": "late"}') is False
+    assert _get_status(db, "reaped") == FAILURE  # stays failed

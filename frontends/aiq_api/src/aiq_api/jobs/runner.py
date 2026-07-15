@@ -217,6 +217,27 @@ def _touch_job_lease_sync(db_url: str, job_id: str) -> None:
         conn.execute(stmt, {"job_id": job_id})
 
 
+def _write_job_success_if_running_sync(db_url: str, job_id: str, stored_output: str) -> bool:
+    """Compare-and-set the job to SUCCESS with its output, only if still RUNNING.
+
+    A single guarded ``UPDATE ... WHERE status = 'running'`` so a job the reaper
+    already moved to a terminal state (e.g. it was reaped while slow to finish)
+    is never resurrected. Returns True iff this call performed the write.
+    """
+    from sqlalchemy import text
+
+    from .event_store import EventStore
+
+    engine = EventStore._get_or_create_sync_engine(db_url)
+    stmt = text(
+        f"UPDATE job_info SET status = 'success', output = :output, updated_at = {_db_now_expr(db_url)} "
+        "WHERE job_id = :job_id AND status = 'running'"
+    )
+    with engine.begin() as conn:
+        result = conn.execute(stmt, {"output": stored_output, "job_id": job_id})
+        return (result.rowcount or 0) == 1
+
+
 def _run_lease_refresher(db_url: str, job_id: str, stop_event: threading.Event) -> None:
     """Refresh the running-job lease on a dedicated thread until signalled.
 
@@ -885,40 +906,34 @@ async def run_agent_job(
                     # Extract report and update status inside the context manager
                     # so the UI sees completion before exporter flush and cleanup
                     report = _extract_result(result)
-                    from .crypto import update_job_output
+                    from .crypto import serialize_job_output_for_storage
 
                     if job_output_cipher is None:
                         raise RuntimeError("job output cipher was not initialized")
                     # Apply caller metadata first, then set the canonical report last so a
                     # stray "report" key in output_metadata can never overwrite the real report.
                     output = {**(output_metadata or {}), "report": report}
-                    # Terminal state is immutable: if the ghost reaper already
-                    # marked this job FAILURE (e.g. it was slow to finish),
-                    # don't resurrect it with SUCCESS.
-                    current_job = await job_store.get_job(job_id)
-                    if current_job is not None and current_job.status != JobStatus.RUNNING.value:
-                        logger.warning(
-                            "Job %s already terminal (%s); skipping success write",
-                            job_id,
-                            current_job.status,
+                    # Terminal state is immutable: write SUCCESS with a single
+                    # compare-and-set (WHERE status='running'), so if the ghost
+                    # reaper already marked this job FAILURE it is never
+                    # resurrected. Serialize/encrypt exactly as update_job_output
+                    # would, then do the guarded write.
+                    try:
+                        stored_output = serialize_job_output_for_storage(output, job_output_cipher)
+                        wrote = await asyncio.get_running_loop().run_in_executor(
+                            None, _write_job_success_if_running_sync, db_url, job_id, stored_output
                         )
-                    else:
-                        try:
-                            await update_job_output(
-                                job_store,
-                                job_id,
-                                JobStatus.SUCCESS,
-                                output=output,
-                                cipher=job_output_cipher,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "Job %s encrypted output write failed exception=%s",
-                                job_id,
-                                exc.__class__.__name__,
-                            )
-                            raise
+                    except Exception as exc:
+                        logger.warning(
+                            "Job %s encrypted output write failed exception=%s",
+                            job_id,
+                            exc.__class__.__name__,
+                        )
+                        raise
+                    if wrote:
                         logger.info("Job %s completed (report: %d chars)", job_id, len(report))
+                    else:
+                        logger.warning("Job %s already terminal; skipping success write", job_id)
 
     except asyncio.CancelledError:
         logger.info("Job %s cancelled", job_id)
