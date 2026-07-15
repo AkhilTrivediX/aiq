@@ -1227,6 +1227,32 @@ def _find_stale_jobs(db_url: str, running_status: str) -> list[str]:
         return [row[0] for row in result]
 
 
+def _mark_job_failed_if_running(db_url: str, job_id: str, running_status: str, failure_status: str, error: str) -> bool:
+    """Atomically flip a job from RUNNING to FAILURE, only if still running.
+
+    Returns True iff this call performed the transition. The ``WHERE status =
+    running`` guard makes the write conditional in a single statement, so a job
+    that reached a terminal state (e.g. a slow worker that finished) between
+    detection and reaping is never clobbered.
+    """
+    from sqlalchemy import text
+
+    from ..jobs.event_store import EventStore
+
+    engine = EventStore._get_or_create_sync_engine(db_url)
+    now_expr = "NOW()" if db_url.startswith("postgresql") else "CURRENT_TIMESTAMP"
+    stmt = text(
+        f"UPDATE job_info SET status = :failure, error = :error, updated_at = {now_expr} "
+        "WHERE job_id = :job_id AND status = :running"
+    )
+    with engine.begin() as conn:
+        result = conn.execute(
+            stmt,
+            {"failure": failure_status, "error": error, "job_id": job_id, "running": running_status},
+        )
+        return (result.rowcount or 0) == 1
+
+
 async def _reap_ghost_jobs(job_store, db_url: str) -> None:
     """
     Background task that periodically marks stale RUNNING jobs as FAILURE.
@@ -1257,19 +1283,31 @@ async def _reap_ghost_jobs(job_store, db_url: str) -> None:
             stale_job_ids = await loop.run_in_executor(None, _find_stale_jobs, db_url, JobStatus.RUNNING.value)
 
             for stale_job_id in stale_job_ids:
-                logger.warning("Reaping ghost job %s (no events for %ds)", stale_job_id, GHOST_JOB_TIMEOUT_SECONDS)
+                error_msg = "Job timed out (no heartbeat received from worker)"
                 try:
-                    await job_store.update_status(
+                    transitioned = await loop.run_in_executor(
+                        None,
+                        _mark_job_failed_if_running,
+                        db_url,
                         stale_job_id,
-                        JobStatus.FAILURE,
-                        error="Job timed out (no heartbeat received from worker)",
+                        JobStatus.RUNNING.value,
+                        JobStatus.FAILURE.value,
+                        error_msg,
+                    )
+                    if not transitioned:
+                        # The job left RUNNING between detection and reaping
+                        # (e.g. a slow worker finished); leave its status intact.
+                        logger.info("Ghost reap skipped %s: no longer running", stale_job_id)
+                        continue
+                    logger.warning(
+                        "Reaped ghost job %s (no heartbeat for %ds)", stale_job_id, GHOST_JOB_TIMEOUT_SECONDS
                     )
                     event_store = EventStore(db_url, stale_job_id)
                     event_store.store(
                         {
                             "type": "job.error",
                             "data": {
-                                "error": "Job timed out (no heartbeat received from worker)",
+                                "error": error_msg,
                                 "error_type": "GhostJobTimeout",
                             },
                         }

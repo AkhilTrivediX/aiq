@@ -38,8 +38,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from aiq_api.routes.jobs import GHOST_JOB_TIMEOUT_SECONDS  # noqa: E402
 from aiq_api.routes.jobs import _find_stale_jobs  # noqa: E402
+from aiq_api.routes.jobs import _mark_job_failed_if_running  # noqa: E402
 
 RUNNING = "running"
+FAILURE = "failure"
+SUCCESS = "success"
 
 
 def _make_db() -> str:
@@ -60,15 +63,33 @@ def _make_db() -> str:
     return db_url
 
 
-def _insert_job(db_url: str, job_id: str, *, status: str, updated_ago_seconds: float) -> None:
-    """Insert a job_info row with updated_at set to now minus the given age."""
+def _insert_job(
+    db_url: str,
+    job_id: str,
+    *,
+    status: str,
+    updated_ago_seconds: float,
+    created_ago_seconds: float | None = None,
+) -> None:
+    """Insert a job_info row. updated_at (the lease) and created_at ages differ
+    when created_ago_seconds is given, to model a long-running-but-live job."""
     from nat.front_ends.fastapi.async_jobs.job_store import JobInfo
 
-    ts = datetime.now(UTC) - timedelta(seconds=updated_ago_seconds)
+    now = datetime.now(UTC)
+    updated = now - timedelta(seconds=updated_ago_seconds)
+    created = now - timedelta(seconds=created_ago_seconds if created_ago_seconds is not None else updated_ago_seconds)
     engine = create_engine(db_url)
     with Session(engine) as s:
-        s.add(JobInfo(job_id=job_id, status=status, expiry_seconds=3600, created_at=ts, updated_at=ts))
+        s.add(JobInfo(job_id=job_id, status=status, expiry_seconds=3600, created_at=created, updated_at=updated))
         s.commit()
+
+
+def _get_status(db_url: str, job_id: str) -> str | None:
+    """Return the stored status for a job, or None if absent."""
+    engine = create_engine(db_url)
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT status FROM job_info WHERE job_id = :j"), {"j": job_id}).first()
+    return row[0] if row else None
 
 
 def _insert_event(db_url: str, job_id: str, *, created_ago_seconds: float) -> None:
@@ -144,3 +165,69 @@ def test_mixed_fleet_reaps_only_ghosts():
     _insert_job(db, "done", status="success", updated_ago_seconds=OLD)
 
     assert sorted(_find_stale_jobs(db, RUNNING)) == ["ghost-zero", "stalled"]
+
+
+# ---------------------------------------------------------------------------
+# Cold-start lease + atomic conditional transition (issue #318 review follow-up)
+# ---------------------------------------------------------------------------
+
+
+def test_slow_init_job_with_fresh_lease_is_not_reaped():
+    """A live worker in a long cold start refreshes its lease (updated_at), so a
+    zero-event RUNNING job that STARTED long ago but was touched recently is not
+    reaped — the regression AjayThorve flagged."""
+    db = _make_db()
+    # created long ago (slow init still running), but lease refreshed just now.
+    _insert_job(db, "slow-init", status=RUNNING, updated_ago_seconds=RECENT, created_ago_seconds=OLD)
+    assert _find_stale_jobs(db, RUNNING) == []
+
+
+def test_stale_lease_zero_event_job_is_reaped():
+    """Once the lease goes stale (worker dead), the zero-event ghost is reaped."""
+    db = _make_db()
+    _insert_job(db, "dead", status=RUNNING, updated_ago_seconds=OLD, created_ago_seconds=OLD)
+    assert _find_stale_jobs(db, RUNNING) == ["dead"]
+
+
+def test_conditional_transition_marks_running_job_failed():
+    """The atomic transition flips a still-RUNNING job to FAILURE and reports it."""
+    db = _make_db()
+    _insert_job(db, "ghost", status=RUNNING, updated_ago_seconds=OLD)
+    did = _mark_job_failed_if_running(db, "ghost", RUNNING, FAILURE, "timed out")
+    assert did is True
+    assert _get_status(db, "ghost") == FAILURE
+
+
+def test_conditional_transition_does_not_clobber_terminal_job():
+    """A job that reached SUCCESS between detection and reaping is left intact."""
+    db = _make_db()
+    _insert_job(db, "finished", status=SUCCESS, updated_ago_seconds=OLD)
+    did = _mark_job_failed_if_running(db, "finished", RUNNING, FAILURE, "timed out")
+    assert did is False
+    assert _get_status(db, "finished") == SUCCESS  # unchanged
+
+
+def test_conditional_transition_missing_job_is_noop():
+    """Transitioning a non-existent job returns False without error."""
+    db = _make_db()
+    assert _mark_job_failed_if_running(db, "nope", RUNNING, FAILURE, "x") is False
+
+
+def test_runner_lease_touch_refreshes_only_running_jobs():
+    """The runner's lease bumps updated_at for a RUNNING job but not a terminal one."""
+    from aiq_api.jobs.runner import _touch_job_lease_sync
+
+    db = _make_db()
+    _insert_job(db, "run", status=RUNNING, updated_ago_seconds=OLD)
+    _insert_job(db, "done", status=SUCCESS, updated_ago_seconds=OLD)
+
+    # Before: the running job is stale and would be reaped.
+    assert _find_stale_jobs(db, RUNNING) == ["run"]
+
+    _touch_job_lease_sync(db, "run")  # live worker refreshes its lease
+    _touch_job_lease_sync(db, "done")  # must be a no-op for a terminal job
+
+    # After: the running job's lease is fresh, so it is no longer reapable;
+    # the terminal job's timestamp was not resurrected.
+    assert _find_stale_jobs(db, RUNNING) == []
+    assert _get_status(db, "done") == SUCCESS

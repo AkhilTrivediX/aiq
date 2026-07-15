@@ -26,6 +26,7 @@ Provides the Dask task function for running any registered agent with:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import logging
 import uuid
@@ -177,6 +178,47 @@ class CancellationMonitor:
 
 # Interval for emitting heartbeat events
 HEARTBEAT_INTERVAL_SECONDS = 30
+
+# The ghost-job reaper treats a RUNNING job with no recent activity as a dead
+# worker. But a worker can spend minutes in pre-event initialization (config,
+# providers, tools, MCP, sandbox) before it stores its first event, so from the
+# moment the job enters RUNNING we refresh a lightweight lease — job_info's
+# updated_at, the same column the reaper falls back to for a zero-event job — on
+# this interval. A slow-but-live worker keeps its lease fresh and is not reaped;
+# a genuinely dead worker stops refreshing and its lease goes stale. Keep this
+# well under GHOST_JOB_TIMEOUT_SECONDS so a live worker refreshes several times
+# before the reaper's timeout.
+LEASE_REFRESH_INTERVAL_SECONDS = 60
+
+
+def _touch_job_lease_sync(db_url: str, job_id: str) -> None:
+    """Refresh the running-job lease by bumping job_info.updated_at.
+
+    Scoped to ``status = 'running'`` so it can never resurrect the timestamp of
+    a job that has already reached a terminal state.
+    """
+    from sqlalchemy import text
+
+    from .event_store import EventStore
+
+    engine = EventStore._get_or_create_sync_engine(db_url)
+    if db_url.startswith("postgresql"):
+        stmt = text("UPDATE job_info SET updated_at = NOW() WHERE job_id = :job_id AND status = 'running'")
+    else:
+        stmt = text("UPDATE job_info SET updated_at = CURRENT_TIMESTAMP WHERE job_id = :job_id AND status = 'running'")
+    with engine.begin() as conn:
+        conn.execute(stmt, {"job_id": job_id})
+
+
+async def _refresh_running_lease(db_url: str, job_id: str) -> None:
+    """Periodically refresh the running-job lease until the task is cancelled."""
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(LEASE_REFRESH_INTERVAL_SECONDS)
+        try:
+            await loop.run_in_executor(None, _touch_job_lease_sync, db_url, job_id)
+        except Exception as exc:  # noqa: BLE001 - a failed lease refresh must never kill the job
+            logger.debug("Lease refresh for job %s failed: %s", job_id, exc)
 
 
 async def run_with_cancellation(
@@ -530,6 +572,7 @@ async def run_agent_job(
     job_store: JobStore | None = None
     job_output_cipher = None
     cancellation_monitor: CancellationMonitor | None = None
+    lease_task: asyncio.Task | None = None
     event_store: EventStore | BatchingEventStore | None = None
     # Sandbox runtime is released on the terminal path; interrupted forces terminate() over close().
     sandbox_runtime: Any | None = None
@@ -566,6 +609,11 @@ async def run_agent_job(
             return
 
         await job_store.update_status(job_id, JobStatus.RUNNING)
+
+        # Start refreshing the reaper lease immediately, before the slow
+        # initialization below stores any event, so a live worker in a long
+        # cold start is not mistaken for a dead one.
+        lease_task = asyncio.create_task(_refresh_running_lease(db_url, job_id))
 
         cancellation_monitor = CancellationMonitor(
             scheduler_address=scheduler_address,
@@ -886,6 +934,10 @@ async def run_agent_job(
     finally:
         # Ensure terminal-path events are not left in the batch buffer.
         await _flush_event_store(event_store, job_id=job_id)
+        if lease_task is not None:
+            lease_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await lease_task
         if cancellation_monitor:
             cancellation_monitor.stop()
         # Idempotent fallback for failures before a terminal branch finalized the runtime.
