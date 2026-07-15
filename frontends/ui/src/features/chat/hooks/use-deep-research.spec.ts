@@ -838,7 +838,7 @@ describe('useDeepResearch', () => {
       })
 
       act(() => {
-        mockClient?.callbacks.onToolEnd?.('web_search', 'Search results...', 'event-2')
+        mockClient?.callbacks.onToolEnd?.('web_search', 'Search results...', 'event-1')
       })
 
       expect(mockCompleteThinkingStep).toHaveBeenCalled()
@@ -1170,6 +1170,149 @@ describe('useDeepResearch', () => {
       // Just verify it doesn't throw.
       act(() => {
         mockClient?.callbacks.onDisconnect?.()
+      })
+    })
+
+    describe('onToolStatus', () => {
+      test('appends status to the active step keyed by eventId', async () => {
+        await setupConnectedHook()
+
+        act(() => {
+          mockClient?.callbacks.onToolStart?.('search', {}, 'wf', 'event-1', 'agent-1')
+        })
+
+        act(() => {
+          mockClient?.callbacks.onToolStatus?.('search', 'extracting entities', 'event-1')
+        })
+
+        expect(mockAppendToThinkingStep).toHaveBeenCalledWith(
+          'step-1',
+          expect.stringContaining('extracting entities'),
+        )
+      })
+
+      test('early-returns for task tools without appending', async () => {
+        await setupConnectedHook()
+
+        act(() => {
+          mockClient?.callbacks.onToolStatus?.('task', 'some status', 'event-1')
+        })
+
+        expect(mockAppendToThinkingStep).not.toHaveBeenCalled()
+      })
+
+      test('early-returns when status is empty string', async () => {
+        await setupConnectedHook()
+
+        act(() => {
+          mockClient?.callbacks.onToolStatus?.('search', '', 'event-1')
+        })
+
+        expect(mockAppendToThinkingStep).not.toHaveBeenCalled()
+      })
+
+      test('early-returns when status is falsy (undefined)', async () => {
+        await setupConnectedHook()
+
+        act(() => {
+          mockClient?.callbacks.onToolStatus?.('search', undefined as unknown as string, 'event-1')
+        })
+
+        expect(mockAppendToThinkingStep).not.toHaveBeenCalled()
+      })
+
+      test('early-returns when in buffered (replay) state', async () => {
+        await setupBufferedHook()
+
+        act(() => {
+          mockClient?.callbacks.onToolStatus?.('search', 'buffered status', 'event-1')
+        })
+
+        expect(mockAppendToThinkingStep).not.toHaveBeenCalled()
+      })
+
+      test('early-returns when job is inactive', async () => {
+        await setupConnectedHook()
+
+        // Deactivate the job so isActiveJob() returns false.
+        mockStoreState.isDeepResearchStreaming = false
+
+        act(() => {
+          mockClient?.callbacks.onToolStatus?.('search', 'some status', 'event-1')
+        })
+
+        expect(mockAppendToThinkingStep).not.toHaveBeenCalled()
+      })
+
+      test('skips append when no step mapping exists for the tool', async () => {
+        await setupConnectedHook()
+
+        // No onToolStart called → no entry in activeStepIdsRef.
+        act(() => {
+          mockClient?.callbacks.onToolStatus?.('unknown_tool', 'some status', 'event-99')
+        })
+
+        expect(mockAppendToThinkingStep).not.toHaveBeenCalled()
+      })
+
+      test('prefers eventId-keyed step over name-keyed step for concurrent identical tools', async () => {
+        mockAddThinkingStep.mockReturnValueOnce('step-A').mockReturnValueOnce('step-B')
+
+        await setupConnectedHook()
+
+        act(() => {
+          mockClient?.callbacks.onToolStart?.('search', {}, 'wf', 'event-A', 'agent-1')
+          mockClient?.callbacks.onToolStart?.('search', {}, 'wf', 'event-B', 'agent-1')
+        })
+
+        act(() => {
+          mockClient?.callbacks.onToolStatus?.('search', 'status for A', 'event-A')
+        })
+
+        expect(mockAppendToThinkingStep).toHaveBeenCalledWith('step-A', expect.any(String))
+        expect(mockAppendToThinkingStep).not.toHaveBeenCalledWith('step-B', expect.any(String))
+      })
+    })
+
+    describe('onToolEnd — eventId correlation', () => {
+      test('resolves step by eventId so concurrent identical tools complete the correct step', async () => {
+        mockAddThinkingStep.mockReturnValueOnce('step-A').mockReturnValueOnce('step-B')
+        mockAddDeepResearchToolCall.mockReturnValueOnce('call-A').mockReturnValueOnce('call-B')
+
+        await setupConnectedHook()
+
+        act(() => {
+          mockClient?.callbacks.onToolStart?.('search', {}, 'wf', 'event-A', 'agent-1')
+          mockClient?.callbacks.onToolStart?.('search', {}, 'wf', 'event-B', 'agent-1')
+        })
+
+        // Complete only event-A.
+        act(() => {
+          mockClient?.callbacks.onToolEnd?.('search', 'result A', 'event-A')
+        })
+
+        // step-A must be completed; step-B must remain open.
+        expect(mockCompleteThinkingStep).toHaveBeenCalledWith('step-A')
+        expect(mockCompleteThinkingStep).not.toHaveBeenCalledWith('step-B')
+
+        // Output appended to step-A only.
+        const appends = mockAppendToThinkingStep.mock.calls.filter((args: unknown[]) => args[0] === 'step-A')
+        expect(appends.some((args: unknown[]) => String(args[1]).includes('result A'))).toBe(true)
+      })
+
+      test('falls back to name-keyed lookup when eventId is absent', async () => {
+        await setupConnectedHook()
+
+        // onToolStart without eventId → keyed by name only.
+        act(() => {
+          mockClient?.callbacks.onToolStart?.('search', {}, 'wf', undefined, 'agent-1')
+        })
+
+        act(() => {
+          mockClient?.callbacks.onToolEnd?.('search', 'legacy result', undefined)
+        })
+
+        expect(mockCompleteThinkingStep).toHaveBeenCalledWith('step-1')
       })
     })
   })

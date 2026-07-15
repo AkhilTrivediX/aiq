@@ -35,6 +35,7 @@ import uuid
 import httpx
 from langchain_core.callbacks import adispatch_custom_event
 from pydantic import Field
+from pydantic import field_validator
 
 from nat.builder.builder import Builder
 from nat.builder.function_info import FunctionInfo
@@ -71,11 +72,20 @@ class SemanticOntologyQueryToolConfig(FunctionBaseConfig, name="semantic_ontolog
 
     base_url: str = Field(
         default_factory=lambda: os.environ.get("SEMANTIC_ONTOLOGY_BASE_URL", ""),
+        validate_default=True,
         description=(
             "Base URL of the Semantic Ontology frontend (HTTPS required). "
             "Defaults to the SEMANTIC_ONTOLOGY_BASE_URL environment variable."
         ),
     )
+
+    @field_validator("base_url")
+    @classmethod
+    def _require_https(cls, v: str) -> str:
+        if v and v.startswith("http://"):
+            raise ValueError("base_url must use HTTPS, not HTTP")
+        return v
+
     path: str = Field(
         default="/api/chat/completions",
         description="Chat completions endpoint path on the Semantic Ontology frontend.",

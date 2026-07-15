@@ -472,14 +472,15 @@ export const useDeepResearch = (): UseDeepResearchReturn => {
             if (stepId) appendToThinkingStep(stepId, `\n• ${status}`)
           },
 
-          onToolEnd: (name, output) => {
+          onToolEnd: (name, output, eventId) => {
             if (name === 'task') return
             if (buf.active) {
               const stack = buf.activeToolStacks.get(name); const id = stack?.pop(); if (id) { const t = buf.toolCalls.get(id); if (t) t.output = output ? JSON.stringify(output) : undefined }; return
             }
             if (!isActiveJob()) return
-            const stepId = activeStepIdsRef.current.get(`tool:${name}`)
-            if (stepId) { if (output) { const truncated = output.length > 500 ? output.substring(0, 500) + '...' : output; appendToThinkingStep(stepId, `\nOutput: ${truncated}`) }; completeThinkingStep(stepId); activeStepIdsRef.current.delete(`tool:${name}`) }
+            const stepKey = (eventId && activeStepIdsRef.current.has(`tool:${eventId}`)) ? `tool:${eventId}` : `tool:${name}`
+            const stepId = activeStepIdsRef.current.get(stepKey)
+            if (stepId) { if (output) { const truncated = output.length > 500 ? output.substring(0, 500) + '...' : output; appendToThinkingStep(stepId, `\nOutput: ${truncated}`) }; completeThinkingStep(stepId); activeStepIdsRef.current.delete(stepKey) }
             const toolCallId = activeStepIdsRef.current.get(`toolCall:${name}`)
             if (toolCallId) { completeDeepResearchToolCall(toolCallId, output); activeStepIdsRef.current.delete(`toolCall:${name}`) }
             setCurrentStatus('researching')

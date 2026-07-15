@@ -691,6 +691,8 @@ class AgentEventCallback(BaseCallbackHandler):
         This bridges those events to the SSE stream as ``tool.update`` events
         so the UI can render live status under the running tool's thinking step.
         """
+        if name != "semantic_ontology_status":
+            return
         if not isinstance(data, dict):
             return
         label = data.get("label")
