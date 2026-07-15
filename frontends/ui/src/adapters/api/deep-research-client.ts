@@ -133,6 +133,22 @@ export interface ToolStartEvent extends DeepResearchSSEEvent {
   }
 }
 
+/** tool.update event — mid-run status label streamed by a tool */
+export interface ToolUpdateEvent extends DeepResearchSSEEvent {
+  event: 'tool.update'
+  id?: string
+  data: {
+    name?: string
+    data?: {
+      chunk?: string
+    }
+    metadata?: {
+      workflow?: string
+      agent_id?: string
+    }
+  }
+}
+
 /** tool.end event */
 export interface ToolEndEvent extends DeepResearchSSEEvent {
   event: 'tool.end'
@@ -204,6 +220,7 @@ export type DeepResearchEvent =
   | LLMChunkEvent
   | LLMEndEvent
   | ToolStartEvent
+  | ToolUpdateEvent
   | ToolEndEvent
   | ArtifactUpdateEvent
 
@@ -233,7 +250,7 @@ export interface DeepResearchCallbacks {
   /** Called on tool events */
   onToolStart?: (name: string, input?: Record<string, unknown>, workflow?: string, eventId?: string, agentId?: string, isSandbox?: boolean) => void
   /** Called on a tool.update event — a mid-run status label streamed by a tool (e.g. Semantic Ontology plan steps). */
-  onToolStatus?: (name: string, status: string, workflow?: string, agentId?: string) => void
+  onToolStatus?: (name: string, status: string, eventId?: string, workflow?: string, agentId?: string) => void
   onToolEnd?: (name: string, output?: string, eventId?: string, agentId?: string, isSandbox?: boolean) => void
   /** Called on artifact updates */
   onTodoUpdate?: (todos: TodoItem[], workflow?: string) => void
@@ -507,16 +524,12 @@ export const createDeepResearchClient = (options: DeepResearchStreamOptions): De
       }
 
       case 'tool.update': {
-        // Mid-run status label streamed by a tool (category=tool, state=update).
-        // Status text is carried in data.chunk: { id, name, timestamp, data: { chunk }, metadata: { workflow, agent_id } }
-        const toolData = rawData as {
-          name?: string
-          data?: { chunk?: string }
-          metadata?: { workflow?: string; agent_id?: string }
-        }
+        // Mid-run status label streamed by a tool. { id, name, data: { chunk }, metadata: { workflow, agent_id } }
+        // id matches the run_id used in the corresponding tool.start event for step correlation.
+        const toolData = rawData as ToolUpdateEvent['data'] & { id?: string }
         const status = toolData.data?.chunk
         if (status) {
-          callbacks.onToolStatus?.(toolData.name || '', status, toolData.metadata?.workflow, toolData.metadata?.agent_id)
+          callbacks.onToolStatus?.(toolData.name || '', status, toolData.id, toolData.metadata?.workflow, toolData.metadata?.agent_id)
         }
         break
       }

@@ -440,7 +440,7 @@ export const useDeepResearch = (): UseDeepResearchReturn => {
             if (llmStepKeys.length > 0) { const [key, llmStepId] = llmStepKeys[llmStepKeys.length - 1]; completeDeepResearchLLMStep(llmStepId, thinking, usage); activeStepIdsRef.current.delete(key) }
           },
 
-          onToolStart: (name, input, workflow, _eventId, agentId, isSandbox) => {
+          onToolStart: (name, input, workflow, eventId, agentId, isSandbox) => {
             if (name === 'task') return
             if (buf.active) {
               const id = `tool-${buf.idCounter++}`; buf.toolCalls.set(id, { name, input, workflow, agentId, isSandbox })
@@ -452,18 +452,23 @@ export const useDeepResearch = (): UseDeepResearchReturn => {
             if (hasUserMsg) {
               const inputText = input ? ('_raw' in input && typeof input._raw === 'string' ? input._raw : JSON.stringify(input, null, 2)) : null
               const stepId = addThinkingStep({ category: 'tools', functionName: name, displayName: name, content: inputText ? `Input: ${inputText}\n` : 'Executing...\n', isComplete: false, isDeepResearch: true })
-              activeStepIdsRef.current.set(`tool:${name}`, stepId)
+              // Key by eventId (= LangChain run_id) when available so concurrent same-name tools
+              // don't overwrite each other's step entry; fall back to name for older backends.
+              activeStepIdsRef.current.set(eventId ? `tool:${eventId}` : `tool:${name}`, stepId)
             }
             const toolCallId = addDeepResearchToolCall({ name, input, workflow, agentId, isSandbox })
             activeStepIdsRef.current.set(`toolCall:${name}`, toolCallId)
           },
 
-          onToolStatus: (name, status) => {
+          onToolStatus: (name, status, eventId) => {
             if (name === 'task' || !status) return
             if (buf.active) return
             if (!isActiveJob()) return
             resetTimeout()
-            const stepId = activeStepIdsRef.current.get(`tool:${name}`)
+            // Prefer eventId-keyed lookup (matches tool.start key) to avoid routing
+            // status updates to the wrong step when the same tool runs concurrently.
+            const stepId = (eventId && activeStepIdsRef.current.get(`tool:${eventId}`))
+              || activeStepIdsRef.current.get(`tool:${name}`)
             if (stepId) appendToThinkingStep(stepId, `\n• ${status}`)
           },
 

@@ -28,6 +28,8 @@ This tool consumes the stream and returns the final answer text to the agent.
 import asyncio
 import json
 import logging
+import os
+import time
 import uuid
 
 import httpx
@@ -68,8 +70,11 @@ class SemanticOntologyQueryToolConfig(FunctionBaseConfig, name="semantic_ontolog
     """
 
     base_url: str = Field(
-        default="http://host.docker.internal:3100",
-        description="Base URL of the Semantic Ontology frontend (which proxies to the Semantic Ontology backend).",
+        default_factory=lambda: os.environ.get("SEMANTIC_ONTOLOGY_BASE_URL", ""),
+        description=(
+            "Base URL of the Semantic Ontology frontend (HTTPS required). "
+            "Defaults to the SEMANTIC_ONTOLOGY_BASE_URL environment variable."
+        ),
     )
     path: str = Field(
         default="/api/chat/completions",
@@ -148,7 +153,6 @@ async def _emit_status(label: str | None) -> None:
 
 @register_function(config_type=SemanticOntologyQueryToolConfig)
 async def semantic_ontology_query(tool_config: SemanticOntologyQueryToolConfig, builder: Builder):
-    endpoint = f"{tool_config.base_url.rstrip('/')}{tool_config.path}"
     timeout = httpx.Timeout(tool_config.timeout_seconds, connect=10.0)
 
     async def _semantic_ontology_query(question: str) -> str:
@@ -167,38 +171,20 @@ async def semantic_ontology_query(tool_config: SemanticOntologyQueryToolConfig, 
         """
         from aiq_agent.auth import get_auth_token
 
+        if not tool_config.base_url:
+            return (
+                "Error: Semantic Ontology base URL is not configured. "
+                "Set the SEMANTIC_ONTOLOGY_BASE_URL environment variable."
+            )
+        endpoint = f"{tool_config.base_url.rstrip('/')}{tool_config.path}"
+
         token = get_auth_token()
         if not token:
-            logger.warning(
-                "semantic_ontology_query: get_auth_token() returned no token; cannot call Semantic Ontology"
-            )
+            logger.warning("semantic_ontology_query: no auth token available; cannot call Semantic Ontology")
             return (
                 "Error: Semantic Ontology query is unavailable because no authentication token is available. "
                 "Please sign in so your SSO token can be forwarded to Semantic Ontology."
             )
-
-        # Decode (without verifying) just to log which issuer/expiry we're
-        # forwarding — helps diagnose Semantic Ontology-side bearer rejections.
-        try:
-            import base64
-            import json as _json
-
-            claim_b64 = token.split(".")[1]
-            claim_b64 += "=" * (-len(claim_b64) % 4)
-            _claims = _json.loads(base64.urlsafe_b64decode(claim_b64))
-            logger.warning(
-                "semantic_ontology_query: token claim keys=%s | sub=%s email=%s name=%s "
-                "preferred_username=%s iss=%s exp=%s",
-                sorted(_claims.keys()),
-                _claims.get("sub"),
-                _claims.get("email"),
-                _claims.get("name"),
-                _claims.get("preferred_username"),
-                _claims.get("iss"),
-                _claims.get("exp"),
-            )
-        except Exception:
-            logger.warning("semantic_ontology_query: forwarding token (could not decode claims; not a JWT?)")
 
         headers = {
             "Authorization": f"Bearer {token}",
@@ -217,29 +203,34 @@ async def semantic_ontology_query(tool_config: SemanticOntologyQueryToolConfig, 
         # Semantic Ontology serves one conversation at a time and returns 409 while busy. The
         # research agents may fire several semantic_ontology_query calls close together, so
         # retry on 409 with backoff to serialize against that single slot.
+        # The overall deadline caps all attempts + backoff sleeps within timeout_seconds.
         max_409_retries = 6
+        overall_deadline = time.monotonic() + tool_config.timeout_seconds
         try:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 for attempt in range(max_409_retries + 1):
+                    if time.monotonic() >= overall_deadline:
+                        return "Error: Semantic Ontology request timed out."
                     async with client.stream("POST", endpoint, headers=headers, json=payload) as response:
-                        logger.warning(
-                            "semantic_ontology_query: Semantic Ontology %s responded HTTP %s (attempt %s)",
-                            endpoint,
+                        logger.debug(
+                            "semantic_ontology_query: HTTP %s from %s (attempt %s)",
                             response.status_code,
+                            endpoint,
                             attempt + 1,
                         )
                         if response.status_code == 409 and attempt < max_409_retries:
                             await response.aclose()
-                            await asyncio.sleep(2.0 * (attempt + 1))
+                            sleep_secs = min(2.0 * (attempt + 1), max(0.0, overall_deadline - time.monotonic()))
+                            await asyncio.sleep(sleep_secs)
                             continue
                         if response.status_code == 401:
                             body = await response.aread()
                             logger.warning(
-                                "semantic_ontology_query: 401 body=%r server=%s www-authenticate=%s",
-                                body.decode(errors="replace")[:300],
+                                "semantic_ontology_query: 401 — server=%s www-authenticate=%s",
                                 response.headers.get("server"),
                                 response.headers.get("www-authenticate"),
                             )
+                            logger.debug("semantic_ontology_query: 401 body=%r", body.decode(errors="replace")[:300])
                             return (
                                 "Error: Semantic Ontology rejected the request (401 Unauthorized). Your SSO token may "
                                 "have expired or Semantic Ontology does not trust this token's issuer."
@@ -248,7 +239,14 @@ async def semantic_ontology_query(tool_config: SemanticOntologyQueryToolConfig, 
                             return "Error: Semantic Ontology is busy with another conversation. Please retry shortly."
                         if response.status_code >= 400:
                             body = (await response.aread()).decode(errors="replace")[:500]
-                            return f"Error: Semantic Ontology returned HTTP {response.status_code}: {body}"
+                            logger.warning(
+                                "semantic_ontology_query: HTTP %s error body=%r",
+                                response.status_code,
+                                body,
+                            )
+                            return (
+                                f"Error: Semantic Ontology returned an unexpected error (HTTP {response.status_code})."
+                            )
 
                         async for line in response.aiter_lines():
                             # SSE: payload lines start with "data: "; comment

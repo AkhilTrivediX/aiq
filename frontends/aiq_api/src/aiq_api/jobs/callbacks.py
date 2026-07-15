@@ -636,6 +636,7 @@ class AgentEventCallback(BaseCallbackHandler):
 
         self._emit(
             IntermediateStepEvent(
+                id=run_id or str(uuid.uuid4()),
                 category=EventCategory.TOOL,
                 state=EventState.START,
                 name=tool_name,
@@ -694,11 +695,13 @@ class AgentEventCallback(BaseCallbackHandler):
             return
         label = data.get("label")
         tool_name = data.get("tool")
-        if not label or not tool_name:
+        if not isinstance(label, str) or not isinstance(tool_name, str) or not label or not tool_name:
             return
-        event_metadata = self._build_metadata_for_run(str(run_id)) if run_id is not None else None
+        run_id_str = str(run_id) if run_id is not None else ""
+        event_metadata = self._build_metadata_for_run(run_id_str) if run_id_str else None
         self._emit(
             IntermediateStepEvent(
+                id=run_id_str or str(uuid.uuid4()),
                 category=EventCategory.TOOL,
                 state=EventState.UPDATE,
                 name=tool_name,
