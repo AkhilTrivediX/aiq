@@ -1201,7 +1201,7 @@ def _find_stale_jobs(db_url: str, running_status: str) -> list[str]:
         # sticking the job in RUNNING forever. COALESCE falls back to
         # job_info.updated_at (set when the job entered RUNNING) when there are
         # no events, so both cases share one staleness check.
-        if db_url.startswith("postgresql"):
+        if db_url.startswith(("postgresql", "postgres")):
             stale_query = text(
                 "SELECT ji.job_id FROM job_info ji "
                 "LEFT JOIN job_events je ON je.job_id = ji.job_id "
@@ -1240,7 +1240,7 @@ def _mark_job_failed_if_running(db_url: str, job_id: str, running_status: str, f
     from ..jobs.event_store import EventStore
 
     engine = EventStore._get_or_create_sync_engine(db_url)
-    now_expr = "NOW()" if db_url.startswith("postgresql") else "CURRENT_TIMESTAMP"
+    now_expr = "NOW()" if db_url.startswith(("postgresql", "postgres")) else "CURRENT_TIMESTAMP"
     stmt = text(
         f"UPDATE job_info SET status = :failure, error = :error, updated_at = {now_expr} "
         "WHERE job_id = :job_id AND status = :running"

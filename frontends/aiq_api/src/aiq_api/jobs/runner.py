@@ -26,9 +26,9 @@ Provides the Dask task function for running any registered agent with:
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import importlib
 import logging
+import threading
 import uuid
 from collections.abc import Awaitable
 from collections.abc import Callable
@@ -191,6 +191,14 @@ HEARTBEAT_INTERVAL_SECONDS = 30
 LEASE_REFRESH_INTERVAL_SECONDS = 60
 
 
+def _db_now_expr(db_url: str) -> str:
+    """Return the DB current-time SQL expression for this backend.
+
+    Accepts both ``postgresql://`` and the legacy ``postgres://`` scheme.
+    """
+    return "NOW()" if db_url.startswith(("postgresql", "postgres")) else "CURRENT_TIMESTAMP"
+
+
 def _touch_job_lease_sync(db_url: str, job_id: str) -> None:
     """Refresh the running-job lease by bumping job_info.updated_at.
 
@@ -202,21 +210,24 @@ def _touch_job_lease_sync(db_url: str, job_id: str) -> None:
     from .event_store import EventStore
 
     engine = EventStore._get_or_create_sync_engine(db_url)
-    if db_url.startswith("postgresql"):
-        stmt = text("UPDATE job_info SET updated_at = NOW() WHERE job_id = :job_id AND status = 'running'")
-    else:
-        stmt = text("UPDATE job_info SET updated_at = CURRENT_TIMESTAMP WHERE job_id = :job_id AND status = 'running'")
+    stmt = text(
+        f"UPDATE job_info SET updated_at = {_db_now_expr(db_url)} WHERE job_id = :job_id AND status = 'running'"
+    )
     with engine.begin() as conn:
         conn.execute(stmt, {"job_id": job_id})
 
 
-async def _refresh_running_lease(db_url: str, job_id: str) -> None:
-    """Periodically refresh the running-job lease until the task is cancelled."""
-    loop = asyncio.get_running_loop()
-    while True:
-        await asyncio.sleep(LEASE_REFRESH_INTERVAL_SECONDS)
+def _run_lease_refresher(db_url: str, job_id: str, stop_event: threading.Event) -> None:
+    """Refresh the running-job lease on a dedicated thread until signalled.
+
+    Runs in its own OS thread — not the worker event loop — so it cannot be
+    starved by synchronous cold-start work (config load, agent import) that
+    holds the loop. ``stop_event.wait`` returns True when the job ends (exit) or
+    False on timeout (refresh, then loop).
+    """
+    while not stop_event.wait(LEASE_REFRESH_INTERVAL_SECONDS):
         try:
-            await loop.run_in_executor(None, _touch_job_lease_sync, db_url, job_id)
+            _touch_job_lease_sync(db_url, job_id)
         except Exception as exc:  # noqa: BLE001 - a failed lease refresh must never kill the job
             logger.debug("Lease refresh for job %s failed: %s", job_id, exc)
 
@@ -572,7 +583,8 @@ async def run_agent_job(
     job_store: JobStore | None = None
     job_output_cipher = None
     cancellation_monitor: CancellationMonitor | None = None
-    lease_task: asyncio.Task | None = None
+    lease_stop: threading.Event | None = None
+    lease_thread: threading.Thread | None = None
     event_store: EventStore | BatchingEventStore | None = None
     # Sandbox runtime is released on the terminal path; interrupted forces terminate() over close().
     sandbox_runtime: Any | None = None
@@ -612,8 +624,16 @@ async def run_agent_job(
 
         # Start refreshing the reaper lease immediately, before the slow
         # initialization below stores any event, so a live worker in a long
-        # cold start is not mistaken for a dead one.
-        lease_task = asyncio.create_task(_refresh_running_lease(db_url, job_id))
+        # cold start is not mistaken for a dead one. It runs on a dedicated
+        # thread so synchronous init work can't starve it.
+        lease_stop = threading.Event()
+        lease_thread = threading.Thread(
+            target=_run_lease_refresher,
+            args=(db_url, job_id, lease_stop),
+            name=f"job-lease-{job_id}",
+            daemon=True,
+        )
+        lease_thread.start()
 
         cancellation_monitor = CancellationMonitor(
             scheduler_address=scheduler_address,
@@ -872,22 +892,33 @@ async def run_agent_job(
                     # Apply caller metadata first, then set the canonical report last so a
                     # stray "report" key in output_metadata can never overwrite the real report.
                     output = {**(output_metadata or {}), "report": report}
-                    try:
-                        await update_job_output(
-                            job_store,
-                            job_id,
-                            JobStatus.SUCCESS,
-                            output=output,
-                            cipher=job_output_cipher,
-                        )
-                    except Exception as exc:
+                    # Terminal state is immutable: if the ghost reaper already
+                    # marked this job FAILURE (e.g. it was slow to finish),
+                    # don't resurrect it with SUCCESS.
+                    current_job = await job_store.get_job(job_id)
+                    if current_job is not None and current_job.status != JobStatus.RUNNING.value:
                         logger.warning(
-                            "Job %s encrypted output write failed exception=%s",
+                            "Job %s already terminal (%s); skipping success write",
                             job_id,
-                            exc.__class__.__name__,
+                            current_job.status,
                         )
-                        raise
-                    logger.info("Job %s completed (report: %d chars)", job_id, len(report))
+                    else:
+                        try:
+                            await update_job_output(
+                                job_store,
+                                job_id,
+                                JobStatus.SUCCESS,
+                                output=output,
+                                cipher=job_output_cipher,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Job %s encrypted output write failed exception=%s",
+                                job_id,
+                                exc.__class__.__name__,
+                            )
+                            raise
+                        logger.info("Job %s completed (report: %d chars)", job_id, len(report))
 
     except asyncio.CancelledError:
         logger.info("Job %s cancelled", job_id)
@@ -934,10 +965,10 @@ async def run_agent_job(
     finally:
         # Ensure terminal-path events are not left in the batch buffer.
         await _flush_event_store(event_store, job_id=job_id)
-        if lease_task is not None:
-            lease_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await lease_task
+        if lease_stop is not None:
+            lease_stop.set()
+        if lease_thread is not None:
+            await asyncio.to_thread(lease_thread.join, 5)
         if cancellation_monitor:
             cancellation_monitor.stop()
         # Idempotent fallback for failures before a terminal branch finalized the runtime.

@@ -231,3 +231,46 @@ def test_runner_lease_touch_refreshes_only_running_jobs():
     # the terminal job's timestamp was not resurrected.
     assert _find_stale_jobs(db, RUNNING) == []
     assert _get_status(db, "done") == SUCCESS
+
+
+def test_lease_refresher_thread_bumps_updated_at():
+    """The dedicated lease thread actually refreshes a running job's lease.
+
+    Uses a 0s interval so the thread refreshes immediately, then stops it.
+    """
+    import threading
+    import time
+
+    from aiq_api.jobs import runner
+
+    db = _make_db()
+    _insert_job(db, "run", status=RUNNING, updated_ago_seconds=OLD)
+    assert _find_stale_jobs(db, RUNNING) == ["run"]  # stale before any refresh
+
+    stop = threading.Event()
+    # Patch the interval to 0 so the refresher touches the lease right away.
+    original = runner.LEASE_REFRESH_INTERVAL_SECONDS
+    runner.LEASE_REFRESH_INTERVAL_SECONDS = 0
+    t = threading.Thread(target=runner._run_lease_refresher, args=(db, "run", stop), daemon=True)
+    try:
+        t.start()
+        # Poll until the lease is refreshed (thread is on a 0s loop).
+        for _ in range(50):
+            if _find_stale_jobs(db, RUNNING) == []:
+                break
+            time.sleep(0.02)
+        assert _find_stale_jobs(db, RUNNING) == []  # lease is now fresh
+    finally:
+        stop.set()
+        t.join(timeout=5)
+        runner.LEASE_REFRESH_INTERVAL_SECONDS = original
+    assert not t.is_alive()  # thread exits promptly on stop
+
+
+def test_db_now_expr_handles_both_postgres_schemes():
+    """Both postgresql:// and legacy postgres:// map to NOW(); sqlite to CURRENT_TIMESTAMP."""
+    from aiq_api.jobs.runner import _db_now_expr
+
+    assert _db_now_expr("postgresql://u@h/db") == "NOW()"
+    assert _db_now_expr("postgres://u@h/db") == "NOW()"
+    assert _db_now_expr("sqlite:///x.db") == "CURRENT_TIMESTAMP"
